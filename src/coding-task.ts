@@ -207,10 +207,11 @@ export async function createWorktree(
         if (lines[i] === branchPattern && i >= 2) {
           const wtPath = lines[i - 2].replace('worktree ', '');
           if (wtPath && wtPath !== repoPath) {
-            execSync(
-              `git worktree remove ${JSON.stringify(wtPath)} --force`,
-              { cwd: repoPath, stdio: 'pipe', timeout: 10000 },
-            );
+            execSync(`git worktree remove ${JSON.stringify(wtPath)} --force`, {
+              cwd: repoPath,
+              stdio: 'pipe',
+              timeout: 10000,
+            });
             logger.info({ wtPath, branch }, 'Removed stale worktree');
           }
         }
@@ -289,11 +290,24 @@ export async function finalizeCodingTask(
 
   logger.info({ branch: info.branch }, 'Branch pushed');
 
-  // Create PR via gh CLI
-  const prOutput = execSync(
-    `gh pr create --title ${JSON.stringify(title)} --body ${JSON.stringify(body)} --base ${info.defaultBranch} --head ${info.branch}`,
-    { cwd: info.worktreePath, encoding: 'utf-8', timeout: 30000 },
-  ).trim();
+  // Create PR via gh CLI.
+  // Write body to a temp file to preserve markdown formatting (newlines,
+  // headers, etc.) — shell escaping via JSON.stringify turns \n into literals.
+  const bodyFile = path.join(info.worktreePath, '.nanoclaw-pr-body.md');
+  fs.writeFileSync(bodyFile, body);
+  let prOutput: string;
+  try {
+    prOutput = execSync(
+      `gh pr create --title ${JSON.stringify(title)} --body-file ${JSON.stringify(bodyFile)} --base ${info.defaultBranch} --head ${info.branch}`,
+      { cwd: info.worktreePath, encoding: 'utf-8', timeout: 30000 },
+    ).trim();
+  } finally {
+    try {
+      fs.unlinkSync(bodyFile);
+    } catch {
+      /* ignore cleanup errors */
+    }
+  }
 
   // gh pr create outputs the PR URL
   const prUrl = prOutput;
