@@ -410,8 +410,6 @@ async function processCodingTask(
     return;
   }
 
-  await reply(`Starting coding task on ${repoName}: ${description}`);
-
   let worktreeInfo;
   try {
     worktreeInfo = await createWorktree(repo, NANOCLAW_OWNER, description);
@@ -420,6 +418,10 @@ async function processCodingTask(
     await reply(`Failed to create worktree: ${msg}`);
     return;
   }
+
+  await reply(
+    `Working on *${repoName}*: ${description}\nBranch: \`${worktreeInfo.branch}\``,
+  );
 
   const meridianContext = loadMeridianContext(worktreeInfo.repoPath);
   const codingPrompt = buildCodingPrompt({
@@ -451,7 +453,6 @@ async function processCodingTask(
             .trim();
           if (text) {
             agentSummary = text;
-            await reply(text);
           }
         }
       },
@@ -476,6 +477,7 @@ async function processCodingTask(
   }
 
   // Finalize: push + PR
+  await reply('Pushing branch and creating PR...');
   try {
     const channelName = group.name || chatJid;
     const prBody = buildPrBody({
@@ -492,7 +494,11 @@ async function processCodingTask(
       prBody,
     );
 
-    await reply(`PR created: ${prResult.prUrl}`);
+    // Post agent summary + PR link as the final message
+    const parts: string[] = [];
+    if (agentSummary) parts.push(agentSummary);
+    parts.push(`PR: ${prResult.prUrl}`);
+    await reply(parts.join('\n\n'));
 
     // Clean up worktree after successful PR
     await cleanupWorktree(worktreeInfo);
