@@ -95,8 +95,7 @@ export class SlackChannel implements Channel {
       const group = groups[jid];
       if (!group) return;
 
-      const isBotMessage =
-        !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -114,7 +113,10 @@ export class SlackChannel implements Channel {
       let content = msg.text;
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        if (
+          content.includes(mentionPattern) &&
+          !TRIGGER_PATTERN.test(content)
+        ) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
@@ -134,7 +136,8 @@ export class SlackChannel implements Channel {
       if (!isBotMessage) {
         const isMain = group.isMain === true;
         const needsTrigger = !isMain && group.requiresTrigger !== false;
-        const willTrigger = !needsTrigger || TRIGGER_PATTERN.test(content.trim());
+        const willTrigger =
+          !needsTrigger || TRIGGER_PATTERN.test(content.trim());
 
         if (willTrigger) {
           this.addReaction(msg.channel, msg.ts, 'eyes');
@@ -154,10 +157,7 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn(
-        { err },
-        'Connected to Slack but failed to get bot user ID',
-      );
+      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
     this.connected = true;
@@ -223,6 +223,30 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
+  async sendThreadReply(jid: string, text: string, messageId: string): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+    try {
+      if (text.length <= MAX_MESSAGE_LENGTH) {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text,
+          thread_ts: messageId,
+        });
+      } else {
+        for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
+          await this.app.client.chat.postMessage({
+            channel: channelId,
+            text: text.slice(i, i + MAX_MESSAGE_LENGTH),
+            thread_ts: messageId,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ jid, err }, 'Failed to send thread reply, falling back to channel');
+      await this.sendMessage(jid, text);
+    }
+  }
+
   async syncGroups(_force: boolean): Promise<void> {
     await this.syncChannelMetadata();
   }
@@ -261,9 +285,7 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(
-    userId: string,
-  ): Promise<string | undefined> {
+  private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
@@ -281,9 +303,14 @@ export class SlackChannel implements Channel {
   }
 
   private addReaction(channel: string, timestamp: string, emoji: string): void {
-    this.app.client.reactions.add({ channel, timestamp, name: emoji }).catch((err) => {
-      logger.debug({ channel, timestamp, emoji, err }, 'Failed to add reaction');
-    });
+    this.app.client.reactions
+      .add({ channel, timestamp, name: emoji })
+      .catch((err) => {
+        logger.debug(
+          { channel, timestamp, emoji, err },
+          'Failed to add reaction',
+        );
+      });
   }
 
   private async flushOutgoingQueue(): Promise<void> {

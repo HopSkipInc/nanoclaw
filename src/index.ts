@@ -192,6 +192,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         group,
         codingTask.repoName,
         codingTask.description,
+        triggerMessage.id,
       );
       return true;
     }
@@ -386,27 +387,33 @@ async function processCodingTask(
   group: RegisteredGroup,
   repoName: string,
   description: string,
+  triggerMessageId?: string,
 ): Promise<void> {
+  // Reply in thread if the channel supports it, otherwise fall back to channel
+  const reply = async (text: string) => {
+    if (triggerMessageId && channel.sendThreadReply) {
+      await channel.sendThreadReply(chatJid, text, triggerMessageId);
+    } else {
+      await channel.sendMessage(chatJid, text);
+    }
+  };
+
   const repo = resolveRepo(repoName);
   if (!repo) {
-    await channel.sendMessage(
-      chatJid,
+    await reply(
       `Repo "${repoName}" not found or not allowed. Check ~/.config/nanoclaw/repo-registry.json`,
     );
     return;
   }
 
-  await channel.sendMessage(
-    chatJid,
-    `Starting coding task on ${repoName}: ${description}`,
-  );
+  await reply(`Starting coding task on ${repoName}: ${description}`);
 
   let worktreeInfo;
   try {
     worktreeInfo = await createWorktree(repo, NANOCLAW_OWNER, description);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await channel.sendMessage(chatJid, `Failed to create worktree: ${msg}`);
+    await reply(`Failed to create worktree: ${msg}`);
     return;
   }
 
@@ -433,7 +440,7 @@ async function processCodingTask(
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         if (text) {
           agentSummary = text;
-          await channel.sendMessage(chatJid, text);
+          await reply(text);
         }
       }
     },
@@ -446,8 +453,7 @@ async function processCodingTask(
   );
 
   if (output === 'error') {
-    await channel.sendMessage(
-      chatJid,
+    await reply(
       `Coding task failed. Worktree preserved at ${worktreeInfo.worktreePath} for inspection.`,
     );
     return;
@@ -470,7 +476,7 @@ async function processCodingTask(
       prBody,
     );
 
-    await channel.sendMessage(chatJid, `PR created: ${prResult.prUrl}`);
+    await reply(`PR created: ${prResult.prUrl}`);
 
     // Clean up worktree after successful PR
     await cleanupWorktree(worktreeInfo);
@@ -485,8 +491,7 @@ async function processCodingTask(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await channel.sendMessage(
-      chatJid,
+    await reply(
       `Agent finished but PR creation failed: ${msg}\nWorktree preserved at ${worktreeInfo.worktreePath}`,
     );
   }
@@ -574,6 +579,7 @@ async function startMessageLoop(): Promise<void> {
                 group,
                 codingTask.repoName,
                 codingTask.description,
+                codingTrigger.id,
               );
               continue;
             }

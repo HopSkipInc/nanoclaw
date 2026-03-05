@@ -90,6 +90,9 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: reply in a thread anchored to a specific message.
+  // messageId is the platform-specific ID of the parent message (e.g., Slack ts).
+  sendThreadReply?(jid: string, text: string, messageId: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
