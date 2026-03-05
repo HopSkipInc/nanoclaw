@@ -11,6 +11,7 @@ import {
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import { registerChannel, ChannelOpts } from './registry.js';
 
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
@@ -222,6 +223,10 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
+  async syncGroups(_force: boolean): Promise<void> {
+    await this.syncChannelMetadata();
+  }
+
   /**
    * Sync channel metadata from Slack.
    * Fetches channels the bot is a member of and stores their names in the DB.
@@ -306,3 +311,11 @@ export class SlackChannel implements Channel {
     }
   }
 }
+
+// Self-register with the channel registry.
+// Returns null when credentials are missing so unconfigured installs skip Slack.
+registerChannel('slack', (opts: ChannelOpts) => {
+  const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
+  if (!env.SLACK_BOT_TOKEN || !env.SLACK_APP_TOKEN) return null;
+  return new SlackChannel(opts);
+});
