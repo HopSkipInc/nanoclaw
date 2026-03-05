@@ -53,6 +53,7 @@ These scopes control what the bot is allowed to do.
 | Scope | Why it's needed |
 |-------|----------------|
 | `chat:write` | Send messages to channels and DMs |
+| `reactions:write` | Add emoji reactions to acknowledge messages |
 | `channels:history` | Read messages in public channels |
 | `groups:history` | Read messages in private channels |
 | `im:history` | Read direct messages |

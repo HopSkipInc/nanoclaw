@@ -1,0 +1,43 @@
+# Slack App Manifest for NanoClaw
+#
+# Import this at https://api.slack.com/apps → Create New App → From a manifest
+# to recreate the app or install in a different workspace.
+#
+# After importing:
+# 1. Enable Socket Mode (Settings → Socket Mode → toggle On)
+# 2. Generate an App-Level Token (connections:write scope) — this is the SLACK_APP_TOKEN (xapp-...)
+# 3. Install to workspace — the Bot User OAuth Token is the SLACK_BOT_TOKEN (xoxb-...)
+# 4. Add the bot to channels you want it to monitor
+
+display_information:
+  name: NanoClaw
+  description: Personal AI assistant powered by Claude
+  background_color: "#2c2d30"
+
+features:
+  bot_user:
+    display_name: NanoClaw
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write          # Send messages to channels and DMs
+      - reactions:write      # Add emoji reactions to acknowledge messages
+      - channels:history     # Read messages in public channels
+      - groups:history       # Read messages in private channels
+      - im:history           # Read direct messages
+      - channels:read        # List channels (for metadata sync)
+      - groups:read          # List private channels (for metadata sync)
+      - users:read           # Look up user display names
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels     # Public channel messages
+      - message.groups       # Private channel messages
+      - message.im           # Direct messages
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true

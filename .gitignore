@@ -18,6 +18,11 @@ groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
 
+# Claude local state
+.claude/state.md
+.claude/settings.local.json
+.claude/memory.db
+
 # Secrets
 *.keys.json
 .env
