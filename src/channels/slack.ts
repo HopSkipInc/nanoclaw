@@ -1,7 +1,7 @@
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
 
-import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -131,7 +131,7 @@ export class SlackChannel implements Channel {
 
       // Immediately acknowledge trigger messages with an emoji reaction
       if (!isBotMessage) {
-        const isMain = group.folder === MAIN_GROUP_FOLDER;
+        const isMain = group.isMain === true;
         const needsTrigger = !isMain && group.requiresTrigger !== false;
         const willTrigger = !needsTrigger || TRIGGER_PATTERN.test(content.trim());
 

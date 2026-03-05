@@ -3,8 +3,11 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   IDLE_TIMEOUT,
+  NANOCLAW_OWNER,
   POLL_INTERVAL,
+  SLACK_ONLY,
   TRIGGER_PATTERN,
 } from './config.js';
 import './channels/index.js';
@@ -13,6 +16,18 @@ import {
   getRegisteredChannelNames,
 } from './channels/registry.js';
 import {
+  buildCodingPrompt,
+  buildPrBody,
+  checkOrphanedWorktrees,
+  cleanupWorktree,
+  createWorktree,
+  finalizeCodingTask,
+  loadMeridianContext,
+  resolveRepo,
+  writeMeridianJournal,
+} from './coding-task.js';
+import {
+  CodingTaskMount,
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
@@ -38,7 +53,6 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
@@ -50,6 +64,7 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { readEnvFile } from './env.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -86,21 +101,11 @@ function saveState(): void {
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
-  let groupDir: string;
-  try {
-    groupDir = resolveGroupFolderPath(group.folder);
-  } catch (err) {
-    logger.warn(
-      { jid, folder: group.folder, err },
-      'Rejecting group registration with invalid folder',
-    );
-    return;
-  }
-
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
 
   // Create group folder
+  const groupDir = path.join(DATA_DIR, '..', 'groups', group.folder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
   logger.info(
@@ -144,7 +149,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
-    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
+    console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
     return true;
   }
 
@@ -168,6 +173,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
+  }
+
+  // Check if the latest trigger message is a coding task
+  const triggerMessage = missedMessages.find((m) =>
+    TRIGGER_PATTERN.test(m.content.trim()),
+  );
+  if (triggerMessage) {
+    const codingTask = parseCodingTask(triggerMessage.content);
+    if (codingTask) {
+      // Advance cursor before async coding task
+      lastAgentTimestamp[chatJid] =
+        missedMessages[missedMessages.length - 1].timestamp;
+      saveState();
+      await processCodingTask(
+        chatJid,
+        channel,
+        group,
+        codingTask.repoName,
+        codingTask.description,
+      );
+      return true;
+    }
   }
 
   const prompt = formatMessages(missedMessages);
@@ -220,10 +247,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       resetIdleTimer();
     }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
-
     if (result.status === 'error') {
       hadError = true;
     }
@@ -260,6 +283,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  codingTask?: CodingTaskMount,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -309,7 +333,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
-        assistantName: ASSISTANT_NAME,
+        codingTask,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -333,6 +357,138 @@ async function runAgent(
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
+  }
+}
+
+// Pattern: "@NanoClaw code <repo> <description>"
+const CODING_TASK_PATTERN = /^code\s+(\S+)\s+(.+)$/i;
+
+/**
+ * Detect if a message is a coding task request.
+ * Returns { repoName, description } or null.
+ */
+function parseCodingTask(
+  content: string,
+): { repoName: string; description: string } | null {
+  // Strip the trigger prefix (e.g., "@NanoClaw ") first
+  const stripped = content.replace(TRIGGER_PATTERN, '').trim();
+  const match = stripped.match(CODING_TASK_PATTERN);
+  if (!match) return null;
+  return { repoName: match[1], description: match[2] };
+}
+
+/**
+ * Process a coding task: create worktree, run agent, push branch, create PR.
+ */
+async function processCodingTask(
+  chatJid: string,
+  channel: Channel,
+  group: RegisteredGroup,
+  repoName: string,
+  description: string,
+): Promise<void> {
+  const repo = resolveRepo(repoName);
+  if (!repo) {
+    await channel.sendMessage(
+      chatJid,
+      `Repo "${repoName}" not found or not allowed. Check ~/.config/nanoclaw/repo-registry.json`,
+    );
+    return;
+  }
+
+  await channel.sendMessage(
+    chatJid,
+    `Starting coding task on ${repoName}: ${description}`,
+  );
+
+  let worktreeInfo;
+  try {
+    worktreeInfo = await createWorktree(repo, NANOCLAW_OWNER, description);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await channel.sendMessage(chatJid, `Failed to create worktree: ${msg}`);
+    return;
+  }
+
+  const meridianContext = loadMeridianContext(worktreeInfo.repoPath);
+  const codingPrompt = buildCodingPrompt({
+    repoName: worktreeInfo.repoName,
+    branch: worktreeInfo.branch,
+    description,
+    meridianContext,
+  });
+
+  // Run the agent with the worktree mounted
+  let agentSummary = '';
+  const output = await runAgent(
+    group,
+    codingPrompt,
+    chatJid,
+    async (result) => {
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        if (text) {
+          agentSummary = text;
+          await channel.sendMessage(chatJid, text);
+        }
+      }
+    },
+    {
+      worktreePath: worktreeInfo.worktreePath,
+      repoName: worktreeInfo.repoName,
+      branch: worktreeInfo.branch,
+      meridianContext,
+    },
+  );
+
+  if (output === 'error') {
+    await channel.sendMessage(
+      chatJid,
+      `Coding task failed. Worktree preserved at ${worktreeInfo.worktreePath} for inspection.`,
+    );
+    return;
+  }
+
+  // Finalize: push + PR
+  try {
+    const channelName = group.name || chatJid;
+    const prBody = buildPrBody({
+      owner: NANOCLAW_OWNER,
+      channel: channelName,
+      branch: worktreeInfo.branch,
+      description,
+      agentSummary,
+    });
+
+    const prResult = await finalizeCodingTask(
+      worktreeInfo,
+      `${description.slice(0, 65)}`,
+      prBody,
+    );
+
+    await channel.sendMessage(chatJid, `PR created: ${prResult.prUrl}`);
+
+    // Clean up worktree after successful PR
+    await cleanupWorktree(worktreeInfo);
+
+    // Journal entry
+    await writeMeridianJournal({
+      repo: worktreeInfo.repoName,
+      title: description.slice(0, 80),
+      why: `Coding task requested via Slack`,
+      what: agentSummary.slice(0, 200) || description,
+      outcome: `PR #${prResult.prNumber} created`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await channel.sendMessage(
+      chatJid,
+      `Agent finished but PR creation failed: ${msg}\nWorktree preserved at ${worktreeInfo.worktreePath}`,
+    );
   }
 }
 
@@ -378,7 +534,9 @@ async function startMessageLoop(): Promise<void> {
 
           const channel = findChannel(channels, chatJid);
           if (!channel) {
-            logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
+            console.log(
+              `Warning: no channel owns JID ${chatJid}, skipping messages`,
+            );
             continue;
           }
 
@@ -419,11 +577,7 @@ async function startMessageLoop(): Promise<void> {
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
             // Show typing indicator while the container processes the piped message
-            channel
-              .setTyping?.(chatJid, true)
-              ?.catch((err) =>
-                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-              );
+            channel.setTyping?.(chatJid, true);
           } else {
             // No active container — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);
@@ -465,6 +619,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  checkOrphanedWorktrees();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
@@ -538,7 +693,7 @@ async function main(): Promise<void> {
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
-        logger.warn({ jid }, 'No channel owns JID, cannot send message');
+        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
         return;
       }
       const text = formatOutbound(rawText);
@@ -566,10 +721,7 @@ async function main(): Promise<void> {
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
-  startMessageLoop().catch((err) => {
-    logger.fatal({ err }, 'Message loop crashed unexpectedly');
-    process.exit(1);
-  });
+  startMessageLoop();
 }
 
 // Guard: only run when executed directly, not when imported by tests

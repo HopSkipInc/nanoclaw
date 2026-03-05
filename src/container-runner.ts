@@ -30,6 +30,13 @@ import { RegisteredGroup } from './types.js';
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
+export interface CodingTaskMount {
+  worktreePath: string;
+  repoName: string;
+  branch: string;
+  meridianContext: string;
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -39,6 +46,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  codingTask?: CodingTaskMount;
 }
 
 export interface ContainerOutput {
@@ -57,6 +65,7 @@ interface VolumeMount {
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
+  codingTask?: CodingTaskMount,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -197,6 +206,15 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Coding task: mount worktree as read-write at /workspace/code
+  if (codingTask) {
+    mounts.push({
+      hostPath: codingTask.worktreePath,
+      containerPath: '/workspace/code',
+      readonly: false,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -226,11 +244,17 @@ function readSecrets(): Record<string, string> {
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  codingTask?: CodingTaskMount,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Signal to agent that it's in coding mode
+  if (codingTask) {
+    args.push('-e', 'NANOCLAW_CODING_TASK=1');
+  }
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
@@ -266,10 +290,14 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group, input.isMain, input.codingTask);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    input.codingTask,
+  );
 
   logger.debug(
     {
