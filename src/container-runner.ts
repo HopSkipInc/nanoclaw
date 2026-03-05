@@ -32,6 +32,7 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 export interface CodingTaskMount {
   worktreePath: string;
+  repoGitDir: string; // host path to <repo>/.git — mounted for git operations
   repoName: string;
   branch: string;
   meridianContext: string;
@@ -206,11 +207,19 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Coding task: mount worktree as read-write at /workspace/code
+  // Coding task: mount worktree + repo .git dir for git operations
   if (codingTask) {
     mounts.push({
       hostPath: codingTask.worktreePath,
       containerPath: '/workspace/code',
+      readonly: false,
+    });
+    // Git worktrees need access to the parent repo's .git dir for
+    // objects, refs, and worktree metadata. The worktree's .git file
+    // is patched to reference this container path before launch.
+    mounts.push({
+      hostPath: codingTask.repoGitDir,
+      containerPath: '/workspace/repo-git',
       readonly: false,
     });
   }

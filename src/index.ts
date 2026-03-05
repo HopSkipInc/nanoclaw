@@ -23,6 +23,7 @@ import {
   createWorktree,
   finalizeCodingTask,
   loadMeridianContext,
+  patchWorktreeForContainer,
   resolveRepo,
   writeMeridianJournal,
 } from './coding-task.js';
@@ -428,32 +429,44 @@ async function processCodingTask(
     meridianContext,
   });
 
+  // Patch git paths so the worktree works inside the container
+  const restoreGitPaths = patchWorktreeForContainer(worktreeInfo);
+
   // Run the agent with the worktree mounted
   let agentSummary = '';
-  const output = await runAgent(
-    group,
-    codingPrompt,
-    chatJid,
-    async (result) => {
-      if (result.result) {
-        const raw =
-          typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result);
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        if (text) {
-          agentSummary = text;
-          await reply(text);
+  let output: string;
+  try {
+    output = await runAgent(
+      group,
+      codingPrompt,
+      chatJid,
+      async (result) => {
+        if (result.result) {
+          const raw =
+            typeof result.result === 'string'
+              ? result.result
+              : JSON.stringify(result.result);
+          const text = raw
+            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+            .trim();
+          if (text) {
+            agentSummary = text;
+            await reply(text);
+          }
         }
-      }
-    },
-    {
-      worktreePath: worktreeInfo.worktreePath,
-      repoName: worktreeInfo.repoName,
-      branch: worktreeInfo.branch,
-      meridianContext,
-    },
-  );
+      },
+      {
+        worktreePath: worktreeInfo.worktreePath,
+        repoGitDir: worktreeInfo.repoGitDir,
+        repoName: worktreeInfo.repoName,
+        branch: worktreeInfo.branch,
+        meridianContext,
+      },
+    );
+  } finally {
+    // Always restore host-side git paths, even on error
+    restoreGitPaths();
+  }
 
   if (output === 'error') {
     await reply(

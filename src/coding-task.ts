@@ -37,6 +37,7 @@ export interface WorktreeInfo {
   branch: string;
   repoName: string;
   repoPath: string;
+  repoGitDir: string; // absolute path to <repo>/.git
   defaultBranch: string;
 }
 
@@ -207,6 +208,9 @@ export async function createWorktree(
     stdio: 'pipe',
   });
 
+  // Resolve the repo's .git directory (usually <repoPath>/.git)
+  const repoGitDir = path.join(repoPath, '.git');
+
   logger.info({ id, branch, worktreePath, repoPath }, 'Worktree created');
 
   return {
@@ -215,6 +219,7 @@ export async function createWorktree(
     branch,
     repoName: path.basename(repoPath),
     repoPath,
+    repoGitDir,
     defaultBranch: repo.defaultBranch,
   };
 }
@@ -281,6 +286,45 @@ export async function cleanupWorktree(info: WorktreeInfo): Promise<void> {
       'Failed to remove worktree, may need manual cleanup',
     );
   }
+}
+
+// Container path where repo .git dir is mounted
+const CONTAINER_REPO_GIT = '/workspace/repo-git';
+const CONTAINER_WORKTREE = '/workspace/code';
+
+/**
+ * Rewrite git path references so the worktree works inside the container.
+ * Returns a restore function that reverts the changes (call after container exits).
+ */
+export function patchWorktreeForContainer(info: WorktreeInfo): () => void {
+  const worktreeGitFile = path.join(info.worktreePath, '.git');
+  const metadataGitdirFile = path.join(
+    info.repoGitDir,
+    'worktrees',
+    info.id,
+    'gitdir',
+  );
+
+  // Save originals
+  const origWorktreeGit = fs.readFileSync(worktreeGitFile, 'utf-8');
+  const origMetadataGitdir = fs.readFileSync(metadataGitdirFile, 'utf-8');
+
+  // Patch: worktree .git → container-side worktree metadata path
+  fs.writeFileSync(
+    worktreeGitFile,
+    `gitdir: ${CONTAINER_REPO_GIT}/worktrees/${info.id}\n`,
+  );
+
+  // Patch: metadata gitdir → container-side worktree .git path
+  fs.writeFileSync(metadataGitdirFile, `${CONTAINER_WORKTREE}/.git\n`);
+
+  logger.debug({ id: info.id }, 'Patched worktree git paths for container');
+
+  return () => {
+    fs.writeFileSync(worktreeGitFile, origWorktreeGit);
+    fs.writeFileSync(metadataGitdirFile, origMetadataGitdir);
+    logger.debug({ id: info.id }, 'Restored worktree git paths');
+  };
 }
 
 // --- Meridian context ---
