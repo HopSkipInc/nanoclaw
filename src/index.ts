@@ -371,8 +371,11 @@ const CODING_TASK_PATTERN = /^code\s+(\S+)\s+(.+)$/i;
 function parseCodingTask(
   content: string,
 ): { repoName: string; description: string } | null {
-  // Strip the trigger prefix (e.g., "@NanoClaw ") first
-  const stripped = content.replace(TRIGGER_PATTERN, '').trim();
+  // Strip the trigger prefix (e.g., "@NanoClaw ") and any Slack user mentions
+  const stripped = content
+    .replace(TRIGGER_PATTERN, '')
+    .replace(/<@[A-Z0-9]+>/g, '')
+    .trim();
   const match = stripped.match(CODING_TASK_PATTERN);
   if (!match) return null;
   return { repoName: match[1], description: match[2] };
