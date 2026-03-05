@@ -288,7 +288,8 @@ async function runAgent(
   codingTask?: CodingTaskMount,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  // Coding tasks get a fresh session — no conversation history carryover
+  const sessionId = codingTask ? undefined : sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -316,9 +317,10 @@ async function runAgent(
   );
 
   // Wrap onOutput to track session ID from streamed results
+  // Coding tasks use throwaway sessions — don't persist their IDs
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
-        if (output.newSessionId) {
+        if (output.newSessionId && !codingTask) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
@@ -342,7 +344,7 @@ async function runAgent(
       wrappedOnOutput,
     );
 
-    if (output.newSessionId) {
+    if (output.newSessionId && !codingTask) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
     }
@@ -471,7 +473,7 @@ async function processCodingTask(
 
   if (output === 'error') {
     await reply(
-      `Coding task failed. Worktree preserved at ${worktreeInfo.worktreePath} for inspection.`,
+      `Coding task failed. The agent encountered an error while working on this. You can retry by sending the same request again.`,
     );
     return;
   }
@@ -514,7 +516,7 @@ async function processCodingTask(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await reply(
-      `Agent finished but PR creation failed: ${msg}\nWorktree preserved at ${worktreeInfo.worktreePath}`,
+      `Agent completed the work but PR creation failed: ${msg}\nAsk an admin to check the worktree or retry.`,
     );
   }
 }

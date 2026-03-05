@@ -408,11 +408,7 @@ export async function runContainerAgent(
                 { group: group.name, containerName },
                 'Coding task complete, stopping container',
               );
-              exec(
-                stopContainer(containerName),
-                { timeout: 15000 },
-                () => {},
-              );
+              exec(stopContainer(containerName), { timeout: 15000 }, () => {});
             }
           } catch (err) {
             logger.warn(
@@ -588,24 +584,33 @@ export async function runContainerAgent(
       logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
-        logger.error(
-          {
-            group: group.name,
-            code,
-            duration,
-            stderr,
-            stdout,
-            logFile,
-          },
-          'Container exited with error',
-        );
+        // Coding tasks are stopped explicitly after output, so exit code
+        // 137 (SIGKILL from docker stop) is expected and not an error.
+        if (input.codingTask && hadStreamingOutput) {
+          logger.info(
+            { group: group.name, code, duration },
+            'Coding task container stopped (expected non-zero exit)',
+          );
+        } else {
+          logger.error(
+            {
+              group: group.name,
+              code,
+              duration,
+              stderr,
+              stdout,
+              logFile,
+            },
+            'Container exited with error',
+          );
 
-        resolve({
-          status: 'error',
-          result: null,
-          error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
-        });
-        return;
+          resolve({
+            status: 'error',
+            result: null,
+            error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
+          });
+          return;
+        }
       }
 
       // Streaming mode: wait for output chain to settle, return completion marker
