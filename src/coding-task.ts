@@ -191,6 +191,42 @@ export async function createWorktree(
     );
   }
 
+  // Clean up any leftover branch/worktree from a previous attempt with the
+  // same slug (common when retrying the same task description).
+  try {
+    const existing = execSync('git worktree list --porcelain', {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+    // Find worktree using this branch and remove it first
+    const branchPattern = `branch refs/heads/${branch}`;
+    if (existing.includes(branchPattern)) {
+      const lines = existing.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i] === branchPattern && i >= 2) {
+          const wtPath = lines[i - 2].replace('worktree ', '');
+          if (wtPath && wtPath !== repoPath) {
+            execSync(
+              `git worktree remove ${JSON.stringify(wtPath)} --force`,
+              { cwd: repoPath, stdio: 'pipe', timeout: 10000 },
+            );
+            logger.info({ wtPath, branch }, 'Removed stale worktree');
+          }
+        }
+      }
+    }
+    // Delete the branch if it still exists
+    execSync(`git branch -D ${JSON.stringify(branch)}`, {
+      cwd: repoPath,
+      stdio: 'pipe',
+      timeout: 10000,
+    });
+    logger.info({ branch }, 'Deleted existing branch for retry');
+  } catch {
+    // Branch doesn't exist — normal case, continue
+  }
+
   // Create worktree with new branch from origin/defaultBranch
   const base = `origin/${repo.defaultBranch}`;
   execSync(
