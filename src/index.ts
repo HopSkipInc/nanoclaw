@@ -557,6 +557,28 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
+          // Check if the latest trigger message is a coding task
+          const codingTrigger = groupMessages.find((m) =>
+            TRIGGER_PATTERN.test(m.content.trim()),
+          );
+          if (codingTrigger) {
+            const codingTask = parseCodingTask(codingTrigger.content);
+            if (codingTask) {
+              lastAgentTimestamp[chatJid] =
+                groupMessages[groupMessages.length - 1].timestamp;
+              saveState();
+              // Run async — don't block the message loop
+              processCodingTask(
+                chatJid,
+                channel,
+                group,
+                codingTask.repoName,
+                codingTask.description,
+              );
+              continue;
+            }
+          }
+
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
           const allPending = getMessagesSince(
