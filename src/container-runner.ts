@@ -400,6 +400,20 @@ export async function runContainerAgent(
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() => onOutput(parsed));
+
+            // Coding tasks are one-shot: stop the container after the
+            // first result so the host can finalize (push + PR) immediately.
+            if (input.codingTask && parsed.status) {
+              logger.info(
+                { group: group.name, containerName },
+                'Coding task complete, stopping container',
+              );
+              exec(
+                stopContainer(containerName),
+                { timeout: 15000 },
+                () => {},
+              );
+            }
           } catch (err) {
             logger.warn(
               { group: group.name, error: err },
