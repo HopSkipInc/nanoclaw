@@ -2,8 +2,25 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
+  ASSISTANT_NAME,
+  NANOCLAW_OWNER,
+  SCHEDULER_POLL_INTERVAL,
+  TIMEZONE,
+} from './config.js';
+import {
+  buildCodingPrompt,
+  buildPrBody,
+  cleanupWorktree,
+  createWorktree,
+  finalizeCodingTask,
+  loadMeridianContext,
+  patchWorktreeForContainer,
+  resolveRepo,
+  writeMeridianJournal,
+} from './coding-task.js';
+import {
+  CodingTaskMount,
   ContainerOutput,
   runContainerAgent,
   writeTasksSnapshot,
@@ -75,17 +92,18 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
-async function runTask(
+/**
+ * Resolve the RegisteredGroup for a task. Returns null and logs on failure.
+ */
+function resolveTaskGroup(
   task: ScheduledTask,
   deps: SchedulerDependencies,
-): Promise<void> {
-  const startTime = Date.now();
+): { group: RegisteredGroup; groupDir: string } | null {
   let groupDir: string;
   try {
     groupDir = resolveGroupFolderPath(task.group_folder);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    // Stop retry churn for malformed legacy rows.
     updateTask(task.id, { status: 'paused' });
     logger.error(
       { taskId: task.id, groupFolder: task.group_folder, error },
@@ -94,19 +112,14 @@ async function runTask(
     logTaskRun({
       task_id: task.id,
       run_at: new Date().toISOString(),
-      duration_ms: Date.now() - startTime,
+      duration_ms: 0,
       status: 'error',
       result: null,
       error,
     });
-    return;
+    return null;
   }
   fs.mkdirSync(groupDir, { recursive: true });
-
-  logger.info(
-    { taskId: task.id, group: task.group_folder },
-    'Running scheduled task',
-  );
 
   const groups = deps.registeredGroups();
   const group = Object.values(groups).find(
@@ -121,13 +134,181 @@ async function runTask(
     logTaskRun({
       task_id: task.id,
       run_at: new Date().toISOString(),
-      duration_ms: Date.now() - startTime,
+      duration_ms: 0,
       status: 'error',
       result: null,
       error: `Group not found: ${task.group_folder}`,
     });
-    return;
+    return null;
   }
+
+  return { group, groupDir };
+}
+
+/**
+ * Run a scheduled coding task: worktree → agent → commit → push → PR.
+ */
+async function runCodingTask(
+  task: ScheduledTask,
+  group: RegisteredGroup,
+  deps: SchedulerDependencies,
+): Promise<{ result: string | null; error: string | null }> {
+  const repoName = task.repo!;
+  const description = task.prompt;
+
+  const reply = async (text: string) => {
+    await deps.sendMessage(task.chat_jid, text);
+  };
+
+  const repo = resolveRepo(repoName);
+  if (!repo) {
+    const error = `Repo "${repoName}" not found or not allowed. Check ~/.config/nanoclaw/repo-registry.json`;
+    await reply(error);
+    return { result: null, error };
+  }
+
+  let worktreeInfo;
+  try {
+    worktreeInfo = await createWorktree(repo, NANOCLAW_OWNER, description);
+  } catch (err) {
+    const error = `Failed to create worktree: ${err instanceof Error ? err.message : String(err)}`;
+    await reply(error);
+    return { result: null, error };
+  }
+
+  await reply(
+    `Working on *${repoName}*: ${description}\nBranch: \`${worktreeInfo.branch}\``,
+  );
+
+  const meridianContext = loadMeridianContext(worktreeInfo.repoPath);
+  const codingPrompt = buildCodingPrompt({
+    repoName: worktreeInfo.repoName,
+    branch: worktreeInfo.branch,
+    description,
+    meridianContext,
+  });
+
+  const restoreGitPaths = patchWorktreeForContainer(worktreeInfo);
+  const isMain = group.isMain === true;
+
+  const codingMount: CodingTaskMount = {
+    worktreePath: worktreeInfo.worktreePath,
+    repoGitDir: worktreeInfo.repoGitDir,
+    repoName: worktreeInfo.repoName,
+    branch: worktreeInfo.branch,
+    meridianContext,
+  };
+
+  let agentSummary = '';
+  let agentError: string | null = null;
+
+  try {
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt: codingPrompt,
+        groupFolder: task.group_folder,
+        chatJid: task.chat_jid,
+        isMain,
+        isScheduledTask: true,
+        assistantName: ASSISTANT_NAME,
+        codingTask: codingMount,
+      },
+      (proc, containerName) =>
+        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+      async (streamedOutput: ContainerOutput) => {
+        if (streamedOutput.result) {
+          const raw =
+            typeof streamedOutput.result === 'string'
+              ? streamedOutput.result
+              : JSON.stringify(streamedOutput.result);
+          const text = raw
+            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+            .trim();
+          if (text) {
+            agentSummary = text;
+          }
+        }
+        if (streamedOutput.status === 'error') {
+          agentError = streamedOutput.error || 'Unknown error';
+        }
+      },
+    );
+
+    if (output.status === 'error') {
+      agentError = output.error || 'Unknown error';
+    }
+  } finally {
+    restoreGitPaths();
+  }
+
+  if (agentError) {
+    await reply(
+      `Coding task failed. The agent encountered an error while working on this.`,
+    );
+    return { result: null, error: agentError };
+  }
+
+  // Finalize: push + PR
+  await reply('Pushing branch and creating PR...');
+  try {
+    const channelName = group.name || task.chat_jid;
+    const prBody = buildPrBody({
+      owner: NANOCLAW_OWNER,
+      channel: channelName,
+      branch: worktreeInfo.branch,
+      description,
+      agentSummary,
+    });
+
+    const prResult = await finalizeCodingTask(
+      worktreeInfo,
+      `${description.slice(0, 65)}`,
+      prBody,
+    );
+
+    const parts: string[] = [];
+    if (agentSummary) parts.push(agentSummary);
+    parts.push(`PR: ${prResult.prUrl}`);
+    await reply(parts.join('\n\n'));
+
+    await cleanupWorktree(worktreeInfo);
+
+    await writeMeridianJournal({
+      repo: worktreeInfo.repoName,
+      title: description.slice(0, 80),
+      why: `Scheduled coding task`,
+      what: agentSummary.slice(0, 200) || description,
+      outcome: `PR #${prResult.prNumber} created`,
+    });
+
+    return {
+      result: `PR #${prResult.prNumber}: ${prResult.prUrl}`,
+      error: null,
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    await reply(
+      `Agent completed the work but PR creation failed: ${error}\nThe worktree is preserved for manual recovery.`,
+    );
+    return { result: null, error };
+  }
+}
+
+async function runTask(
+  task: ScheduledTask,
+  deps: SchedulerDependencies,
+): Promise<void> {
+  const startTime = Date.now();
+
+  const resolved = resolveTaskGroup(task, deps);
+  if (!resolved) return;
+  const { group } = resolved;
+
+  logger.info(
+    { taskId: task.id, group: task.group_folder, repo: task.repo },
+    'Running scheduled task',
+  );
 
   // Update tasks snapshot for container to read (filtered by group)
   const isMain = group.isMain === true;
@@ -149,72 +330,77 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
-  const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  // Route: coding task (has repo) vs normal task
+  if (task.repo) {
+    const codingResult = await runCodingTask(task, group, deps);
+    result = codingResult.result;
+    error = codingResult.error;
+  } else {
+    // Normal task flow (unchanged)
+    const sessions = deps.getSessions();
+    const sessionId =
+      task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
-  // After the task produces a result, close the container promptly.
-  // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
-  // query loop to time out. A short delay handles any final MCP calls.
-  const TASK_CLOSE_DELAY_MS = 10000;
-  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    const TASK_CLOSE_DELAY_MS = 10000;
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const scheduleClose = () => {
-    if (closeTimer) return; // already scheduled
-    closeTimer = setTimeout(() => {
-      logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
-    }, TASK_CLOSE_DELAY_MS);
-  };
+    const scheduleClose = () => {
+      if (closeTimer) return;
+      closeTimer = setTimeout(() => {
+        logger.debug(
+          { taskId: task.id },
+          'Closing task container after result',
+        );
+        deps.queue.closeStdin(task.chat_jid);
+      }, TASK_CLOSE_DELAY_MS);
+    };
 
-  try {
-    const output = await runContainerAgent(
-      group,
-      {
-        prompt: task.prompt,
-        sessionId,
-        groupFolder: task.group_folder,
-        chatJid: task.chat_jid,
-        isMain,
-        isScheduledTask: true,
-        assistantName: ASSISTANT_NAME,
-      },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
-      async (streamedOutput: ContainerOutput) => {
-        if (streamedOutput.result) {
-          result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
-          scheduleClose();
-        }
-        if (streamedOutput.status === 'success') {
-          deps.queue.notifyIdle(task.chat_jid);
-        }
-        if (streamedOutput.status === 'error') {
-          error = streamedOutput.error || 'Unknown error';
-        }
-      },
-    );
+    try {
+      const output = await runContainerAgent(
+        group,
+        {
+          prompt: task.prompt,
+          sessionId,
+          groupFolder: task.group_folder,
+          chatJid: task.chat_jid,
+          isMain,
+          isScheduledTask: true,
+          assistantName: ASSISTANT_NAME,
+        },
+        (proc, containerName) =>
+          deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+        async (streamedOutput: ContainerOutput) => {
+          if (streamedOutput.result) {
+            result = streamedOutput.result;
+            await deps.sendMessage(task.chat_jid, streamedOutput.result);
+            scheduleClose();
+          }
+          if (streamedOutput.status === 'success') {
+            deps.queue.notifyIdle(task.chat_jid);
+          }
+          if (streamedOutput.status === 'error') {
+            error = streamedOutput.error || 'Unknown error';
+          }
+        },
+      );
 
-    if (closeTimer) clearTimeout(closeTimer);
+      if (closeTimer) clearTimeout(closeTimer);
 
-    if (output.status === 'error') {
-      error = output.error || 'Unknown error';
-    } else if (output.result) {
-      // Messages are sent via MCP tool (IPC), result text is just logged
-      result = output.result;
+      if (output.status === 'error') {
+        error = output.error || 'Unknown error';
+      } else if (output.result) {
+        result = output.result;
+      }
+
+      logger.info(
+        { taskId: task.id, durationMs: Date.now() - startTime },
+        'Task completed',
+      );
+    } catch (err) {
+      if (closeTimer) clearTimeout(closeTimer);
+      error = err instanceof Error ? err.message : String(err);
+      logger.error({ taskId: task.id, error }, 'Task failed');
     }
-
-    logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
-      'Task completed',
-    );
-  } catch (err) {
-    if (closeTimer) clearTimeout(closeTimer);
-    error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Task failed');
   }
 
   const durationMs = Date.now() - startTime;

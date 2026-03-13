@@ -61,6 +61,7 @@ export interface ScheduledTask {
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
+  repo: string | null; // When set, task runs as a coding task: worktree → agent → commit → push → PR
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;

@@ -161,6 +161,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    repo?: string;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -260,12 +261,13 @@ export async function processTaskIpc(
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          repo: data.repo || null,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
         });
         logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
+          { taskId, sourceGroup, targetFolder, contextMode, repo: data.repo },
           'Task created via IPC',
         );
       }
