@@ -213,6 +213,63 @@ describe('coding-task', () => {
       fs.rmSync(tmpDir, { recursive: true });
     });
 
+    it('reads CLAUDE.md from repo root', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-test-'));
+      fs.writeFileSync(
+        path.join(tmpDir, 'CLAUDE.md'),
+        '# Project\nUse TypeScript',
+      );
+
+      const context = loadMeridianContext(tmpDir);
+      expect(context).toContain('Project Instructions');
+      expect(context).toContain('Use TypeScript');
+
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+
+    it('reads personal-state.md', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-test-'));
+      const claudeDir = path.join(tmpDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(claudeDir, 'personal-state.md'),
+        '# Personal\nFocus on tests',
+      );
+
+      const context = loadMeridianContext(tmpDir);
+      expect(context).toContain('Personal Context');
+      expect(context).toContain('Focus on tests');
+
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+
+    it('reads all context files in order', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-test-'));
+      const claudeDir = path.join(tmpDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'CLAUDE.md'), 'project-instructions');
+      fs.writeFileSync(path.join(claudeDir, 'state.md'), 'repo-state');
+      fs.writeFileSync(path.join(claudeDir, 'team-state.md'), 'team-context');
+      fs.writeFileSync(
+        path.join(claudeDir, 'personal-state.md'),
+        'personal-notes',
+      );
+
+      const context = loadMeridianContext(tmpDir);
+      const claudeMdPos = context.indexOf('project-instructions');
+      const statePos = context.indexOf('repo-state');
+      const teamPos = context.indexOf('team-context');
+      const personalPos = context.indexOf('personal-notes');
+
+      // All present and in order: CLAUDE.md → state → team → personal
+      expect(claudeMdPos).toBeGreaterThanOrEqual(0);
+      expect(statePos).toBeGreaterThan(claudeMdPos);
+      expect(teamPos).toBeGreaterThan(statePos);
+      expect(personalPos).toBeGreaterThan(teamPos);
+
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+
     it('returns empty string for missing files', () => {
       const context = loadMeridianContext('/nonexistent/path');
       expect(context).toBe('');

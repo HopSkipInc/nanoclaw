@@ -19,9 +19,11 @@ groups/global/*
 !groups/global/CLAUDE.md
 
 # Claude local state
+.claude/personal-state.md
 .claude/state.md
 .claude/settings.local.json
 .claude/memory.db
+.claude/meridian.json
 
 # Secrets
 *.keys.json

@@ -382,6 +382,20 @@ export function patchWorktreeForContainer(info: WorktreeInfo): () => void {
 export function loadMeridianContext(repoPath: string): string {
   const parts: string[] = [];
 
+  // Read the repo's CLAUDE.md — contains project conventions, key files,
+  // development instructions. The agent's CWD is /workspace/group (not
+  // /workspace/code), so the SDK won't auto-load this from the worktree.
+  const claudeMdFile = path.join(repoPath, 'CLAUDE.md');
+  if (fs.existsSync(claudeMdFile)) {
+    try {
+      parts.push(
+        `## Project Instructions (CLAUDE.md)\n${fs.readFileSync(claudeMdFile, 'utf-8')}`,
+      );
+    } catch {
+      /* ignore read errors */
+    }
+  }
+
   // Read .claude/state.md from the repo
   const stateFile = path.join(repoPath, '.claude', 'state.md');
   if (fs.existsSync(stateFile)) {
@@ -397,6 +411,23 @@ export function loadMeridianContext(repoPath: string): string {
   if (fs.existsSync(teamStateFile)) {
     try {
       parts.push(`## Team State\n${fs.readFileSync(teamStateFile, 'utf-8')}`);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Read .claude/personal-state.md — personal working notes, current focus,
+  // opinions that inform coding decisions
+  const personalStateFile = path.join(
+    repoPath,
+    '.claude',
+    'personal-state.md',
+  );
+  if (fs.existsSync(personalStateFile)) {
+    try {
+      parts.push(
+        `## Personal Context\n${fs.readFileSync(personalStateFile, 'utf-8')}`,
+      );
     } catch {
       /* ignore */
     }
@@ -483,12 +514,16 @@ The repo is mounted at /workspace/code (read-write).
 Your task: ${opts.description}
 
 Instructions:
-1. Read the relevant code to understand the codebase
-2. Make the necessary changes
-3. Commit your changes with clear, descriptive commit messages
-4. After completing the work, write a brief summary of what you changed as your final response
+1. Read the repo's CLAUDE.md and any relevant docs FIRST to understand project conventions
+2. Read the relevant source code to understand the codebase before making changes
+3. Follow the coding patterns and conventions already established in the repo
+4. Run existing tests after your changes to verify nothing is broken
+5. If the repo has a build step, verify the build passes
+6. Commit your changes with clear, descriptive commit messages (imperative mood, explain "why" not "what")
+7. Write a brief summary of what you changed and why as your final response
 
 Do NOT push or create PRs — that is handled by the host after you exit.
+Do NOT create new documentation files unless the task specifically asks for it.
 </coding-task>`);
 
   return parts.join('\n\n');
