@@ -368,7 +368,12 @@ async function runTask(
           assistantName: ASSISTANT_NAME,
         },
         (proc, containerName) =>
-          deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+          deps.onProcess(
+            task.chat_jid,
+            proc,
+            containerName,
+            task.group_folder,
+          ),
         async (streamedOutput: ContainerOutput) => {
           if (streamedOutput.result) {
             result = streamedOutput.result;
@@ -377,6 +382,7 @@ async function runTask(
           }
           if (streamedOutput.status === 'success') {
             deps.queue.notifyIdle(task.chat_jid);
+            scheduleClose(); // Close promptly even when result is null (e.g. IPC-only tasks)
           }
           if (streamedOutput.status === 'error') {
             error = streamedOutput.error || 'Unknown error';
