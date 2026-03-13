@@ -73,6 +73,32 @@ Query registered groups from `/workspace/project/data/registered_groups.json`. A
 
 ### Scheduling Tasks
 
+Use the `schedule_task` MCP tool. Key parameters:
+- `prompt`: What the agent should do
+- `schedule_type`: `cron`, `interval`, or `once`
+- `schedule_value`: Cron expression, milliseconds, or local timestamp
+- `context_mode`: `group` (with chat history) or `isolated` (fresh session)
+- `repo`: *(optional)* Repo name from the repo registry. *You MUST set this when the user mentions a repo, wants a PR, or wants to write files to a repo.* When set, the host automatically creates a git worktree, mounts the repo read-write at /workspace/code, runs the agent, commits changes, pushes a branch, and creates a PR. You do NOT need to know the repo path or set up mounts — the host handles everything.
+
+*IMPORTANT*: When the user says "coding task", "--repo", or mentions writing to a repo, ALWAYS pass the `repo` parameter. Do not try to handle repo access yourself via mounts or file paths. The `repo` parameter triggers a completely different execution pipeline on the host side.
+
+Example — daily competitive research that creates a PR:
+```
+schedule_task(
+  prompt: "Research competitive threats...",
+  schedule_type: "cron",
+  schedule_value: "0 2 * * *",
+  context_mode: "isolated",
+  repo: "meridian"
+)
+```
+
+Available repos are listed in `~/.config/nanoclaw/repo-registry.json` on the host.
+
+### Coding Tasks (from messages)
+
+When a message starts with `code <repo> <description>`, it triggers a coding task immediately (not scheduled). Same pipeline: worktree → agent → commit → push → PR. Responses are threaded to the trigger message.
+
 ### Finding Available Groups
 
 Available groups are provided in `/workspace/ipc/available_groups.json`:
