@@ -223,7 +223,11 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
-  async sendThreadReply(jid: string, text: string, messageId: string): Promise<void> {
+  async sendThreadReply(
+    jid: string,
+    text: string,
+    messageId: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
     try {
       if (text.length <= MAX_MESSAGE_LENGTH) {
@@ -242,7 +246,10 @@ export class SlackChannel implements Channel {
         }
       }
     } catch (err) {
-      logger.warn({ jid, err }, 'Failed to send thread reply, falling back to channel');
+      logger.warn(
+        { jid, err },
+        'Failed to send thread reply, falling back to channel',
+      );
       await this.sendMessage(jid, text);
     }
   }

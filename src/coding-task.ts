@@ -418,11 +418,7 @@ export function loadMeridianContext(repoPath: string): string {
 
   // Read .claude/personal-state.md — personal working notes, current focus,
   // opinions that inform coding decisions
-  const personalStateFile = path.join(
-    repoPath,
-    '.claude',
-    'personal-state.md',
-  );
+  const personalStateFile = path.join(repoPath, '.claude', 'personal-state.md');
   if (fs.existsSync(personalStateFile)) {
     try {
       parts.push(
