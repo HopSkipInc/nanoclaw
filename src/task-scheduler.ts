@@ -14,10 +14,10 @@ import {
   cleanupWorktree,
   createWorktree,
   finalizeCodingTask,
-  loadMeridianContext,
+  loadTeamContext,
   patchWorktreeForContainer,
   resolveRepo,
-  writeMeridianJournal,
+  writeJournal,
 } from './coding-task.js';
 import {
   CodingTaskMount,
@@ -180,12 +180,12 @@ async function runCodingTask(
     `Working on *${repoName}*: ${description}\nBranch: \`${worktreeInfo.branch}\``,
   );
 
-  const meridianContext = loadMeridianContext(worktreeInfo.repoPath);
+  const teamContext = loadTeamContext(worktreeInfo.repoPath);
   const codingPrompt = buildCodingPrompt({
     repoName: worktreeInfo.repoName,
     branch: worktreeInfo.branch,
     description,
-    meridianContext,
+    teamContext,
   });
 
   const restoreGitPaths = patchWorktreeForContainer(worktreeInfo);
@@ -196,7 +196,7 @@ async function runCodingTask(
     repoGitDir: worktreeInfo.repoGitDir,
     repoName: worktreeInfo.repoName,
     branch: worktreeInfo.branch,
-    meridianContext,
+    teamContext,
   };
 
   let agentSummary = '';
@@ -274,7 +274,7 @@ async function runCodingTask(
 
     await cleanupWorktree(worktreeInfo);
 
-    await writeMeridianJournal({
+    await writeJournal({
       repo: worktreeInfo.repoName,
       title: description.slice(0, 80),
       why: `Scheduled coding task`,
@@ -368,12 +368,7 @@ async function runTask(
           assistantName: ASSISTANT_NAME,
         },
         (proc, containerName) =>
-          deps.onProcess(
-            task.chat_jid,
-            proc,
-            containerName,
-            task.group_folder,
-          ),
+          deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
         async (streamedOutput: ContainerOutput) => {
           if (streamedOutput.result) {
             result = streamedOutput.result;

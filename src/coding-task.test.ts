@@ -11,7 +11,7 @@ import {
   checkOrphanedWorktrees,
   cleanupWorktree,
   createWorktree,
-  loadMeridianContext,
+  loadTeamContext,
   loadRepoRegistry,
   resolveRepo,
   WorktreeInfo,
@@ -200,14 +200,14 @@ describe('coding-task', () => {
     });
   });
 
-  describe('loadMeridianContext', () => {
+  describe('loadTeamContext', () => {
     it('reads state files when present', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-test-'));
       const claudeDir = path.join(tmpDir, '.claude');
       fs.mkdirSync(claudeDir, { recursive: true });
       fs.writeFileSync(path.join(claudeDir, 'state.md'), '# State\nSome state');
 
-      const context = loadMeridianContext(tmpDir);
+      const context = loadTeamContext(tmpDir);
       expect(context).toContain('Some state');
 
       fs.rmSync(tmpDir, { recursive: true });
@@ -220,7 +220,7 @@ describe('coding-task', () => {
         '# Project\nUse TypeScript',
       );
 
-      const context = loadMeridianContext(tmpDir);
+      const context = loadTeamContext(tmpDir);
       expect(context).toContain('Project Instructions');
       expect(context).toContain('Use TypeScript');
 
@@ -236,14 +236,14 @@ describe('coding-task', () => {
         '# Personal\nFocus on tests',
       );
 
-      const context = loadMeridianContext(tmpDir);
+      const context = loadTeamContext(tmpDir);
       expect(context).toContain('Personal Context');
       expect(context).toContain('Focus on tests');
 
       fs.rmSync(tmpDir, { recursive: true });
     });
 
-    it('reads all context files in order', () => {
+    it('reads all repo context files in order', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-test-'));
       const claudeDir = path.join(tmpDir, '.claude');
       fs.mkdirSync(claudeDir, { recursive: true });
@@ -255,24 +255,35 @@ describe('coding-task', () => {
         'personal-notes',
       );
 
-      const context = loadMeridianContext(tmpDir);
-      const claudeMdPos = context.indexOf('project-instructions');
-      const statePos = context.indexOf('repo-state');
-      const teamPos = context.indexOf('team-context');
-      const personalPos = context.indexOf('personal-notes');
+      const context = loadTeamContext(tmpDir);
 
-      // All present and in order: CLAUDE.md → state → team → personal
+      // Repo-level sections should all appear and in order
+      const claudeMdPos = context.indexOf('## Project Instructions');
+      const statePos = context.indexOf('## Repo State');
+      const teamPos = context.indexOf('## Team State');
+      const personalPos = context.indexOf('## Personal Context');
+
       expect(claudeMdPos).toBeGreaterThanOrEqual(0);
       expect(statePos).toBeGreaterThan(claudeMdPos);
       expect(teamPos).toBeGreaterThan(statePos);
       expect(personalPos).toBeGreaterThan(teamPos);
 
+      // Content actually present
+      expect(context).toContain('project-instructions');
+      expect(context).toContain('repo-state');
+      expect(context).toContain('team-context');
+      expect(context).toContain('personal-notes');
+
       fs.rmSync(tmpDir, { recursive: true });
     });
 
-    it('returns empty string for missing files', () => {
-      const context = loadMeridianContext('/nonexistent/path');
-      expect(context).toBe('');
+    it('does not contain repo-level content for missing path', () => {
+      const context = loadTeamContext('/nonexistent/path');
+      // May still have global context from ~/.claude/, but no repo-level content
+      expect(context).not.toContain('Project Instructions');
+      expect(context).not.toContain('Repo State');
+      expect(context).not.toContain('Team State');
+      expect(context).not.toContain('Personal Context');
     });
   });
 
@@ -310,7 +321,7 @@ describe('coding-task', () => {
         repoName: 'TestRepo',
         branch: 'nanoclaw/greg/test',
         description: 'Add a new feature',
-        meridianContext: '',
+        teamContext: '',
       });
 
       expect(prompt).toContain('nanoclaw/greg/test');
@@ -324,7 +335,7 @@ describe('coding-task', () => {
         repoName: 'TestRepo',
         branch: 'branch',
         description: 'desc',
-        meridianContext: '## Repo State\nSome context here',
+        teamContext: '## Repo State\nSome context here',
       });
 
       expect(prompt).toContain('Some context here');

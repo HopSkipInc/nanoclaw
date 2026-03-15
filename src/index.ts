@@ -25,10 +25,10 @@ import {
   cleanupWorktree,
   createWorktree,
   finalizeCodingTask,
-  loadMeridianContext,
+  loadTeamContext,
   patchWorktreeForContainer,
   resolveRepo,
-  writeMeridianJournal,
+  writeJournal,
 } from './coding-task.js';
 import {
   CodingTaskMount,
@@ -435,12 +435,12 @@ async function processCodingTask(
     `Working on *${repoName}*: ${description}\nBranch: \`${worktreeInfo.branch}\``,
   );
 
-  const meridianContext = loadMeridianContext(worktreeInfo.repoPath);
+  const teamContext = loadTeamContext(worktreeInfo.repoPath);
   const codingPrompt = buildCodingPrompt({
     repoName: worktreeInfo.repoName,
     branch: worktreeInfo.branch,
     description,
-    meridianContext,
+    teamContext,
   });
 
   // Patch git paths so the worktree works inside the container
@@ -473,7 +473,7 @@ async function processCodingTask(
         repoGitDir: worktreeInfo.repoGitDir,
         repoName: worktreeInfo.repoName,
         branch: worktreeInfo.branch,
-        meridianContext,
+        teamContext,
       },
     );
   } finally {
@@ -516,7 +516,7 @@ async function processCodingTask(
     await cleanupWorktree(worktreeInfo);
 
     // Journal entry
-    await writeMeridianJournal({
+    await writeJournal({
       repo: worktreeInfo.repoName,
       title: description.slice(0, 80),
       why: `Coding task requested via Slack`,

@@ -377,62 +377,149 @@ export function patchWorktreeForContainer(info: WorktreeInfo): () => void {
   };
 }
 
-// --- Meridian context ---
+// --- Team context (Wayfind protocol) ---
 
-export function loadMeridianContext(repoPath: string): string {
+function readFileIfExists(filePath: string): string | null {
+  try {
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, 'utf-8');
+    }
+  } catch {
+    /* ignore read errors */
+  }
+  return null;
+}
+
+/**
+ * Extract the User Preferences section from global-state.md.
+ * Returns just the preferences block, not the full file (which has
+ * active projects, memory manifest, etc. that aren't relevant to coding).
+ */
+function extractUserPreferences(globalState: string): string | null {
+  const prefStart = globalState.indexOf('## User Preferences');
+  if (prefStart === -1) return null;
+  const nextSection = globalState.indexOf('\n## ', prefStart + 1);
+  return globalState
+    .slice(prefStart, nextSection === -1 ? undefined : nextSection)
+    .trim();
+}
+
+/**
+ * Scan the Memory Files table in global-state.md and return paths to files
+ * whose "When to load" keywords match the target repo name.
+ */
+function findRelevantMemoryFiles(
+  globalState: string,
+  repoName: string,
+): string[] {
+  const homeDir = process.env.HOME || os.homedir();
+  const memoryDir = path.join(homeDir, '.claude', 'memory');
+  const matches: string[] = [];
+  const repoLower = repoName.toLowerCase();
+
+  // Parse the memory files table — rows like: | `file.md` | keywords | summary |
+  const tableRegex = /^\|\s*`([^`]+)`\s*\|([^|]+)\|/gm;
+  let match: RegExpExecArray | null;
+  while ((match = tableRegex.exec(globalState)) !== null) {
+    const fileName = match[1];
+    const keywords = match[2].toLowerCase();
+    if (keywords.includes(repoLower)) {
+      const filePath = path.join(memoryDir, fileName);
+      if (fs.existsSync(filePath)) {
+        matches.push(filePath);
+      }
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * Load full team context for a coding task (Wayfind protocol).
+ *
+ * Gathers:
+ * 1. Global user instructions (~/.claude/CLAUDE.md, ~/CLAUDE.md)
+ * 2. User preferences from global-state.md
+ * 3. Relevant cross-repo memory files
+ * 4. Target repo's CLAUDE.md, state, team-state, personal-state
+ */
+export function loadTeamContext(repoPath: string): string {
+  const homeDir = process.env.HOME || os.homedir();
   const parts: string[] = [];
+
+  // --- Global context (user-level) ---
+
+  // Global CLAUDE.md files — user's universal coding instructions
+  const globalClaudeMd = readFileIfExists(
+    path.join(homeDir, '.claude', 'CLAUDE.md'),
+  );
+  if (globalClaudeMd) {
+    parts.push(`## Global Instructions (~/.claude/CLAUDE.md)\n${globalClaudeMd}`);
+  }
+
+  const homeClaudeMd = readFileIfExists(path.join(homeDir, 'CLAUDE.md'));
+  if (homeClaudeMd) {
+    parts.push(`## Global Instructions (~/CLAUDE.md)\n${homeClaudeMd}`);
+  }
+
+  // User preferences from global-state.md
+  const globalState = readFileIfExists(
+    path.join(homeDir, '.claude', 'global-state.md'),
+  );
+  if (globalState) {
+    const prefs = extractUserPreferences(globalState);
+    if (prefs) {
+      parts.push(prefs);
+    }
+
+    // Cross-repo memory files relevant to this repo
+    const repoName = path.basename(repoPath);
+    const memoryFiles = findRelevantMemoryFiles(globalState, repoName);
+    for (const memFile of memoryFiles) {
+      const content = readFileIfExists(memFile);
+      if (content) {
+        const fileName = path.basename(memFile);
+        parts.push(`## Memory: ${fileName}\n${content}`);
+      }
+    }
+  }
+
+  // --- Repo-level context ---
 
   // Read the repo's CLAUDE.md — contains project conventions, key files,
   // development instructions. The agent's CWD is /workspace/group (not
   // /workspace/code), so the SDK won't auto-load this from the worktree.
-  const claudeMdFile = path.join(repoPath, 'CLAUDE.md');
-  if (fs.existsSync(claudeMdFile)) {
-    try {
-      parts.push(
-        `## Project Instructions (CLAUDE.md)\n${fs.readFileSync(claudeMdFile, 'utf-8')}`,
-      );
-    } catch {
-      /* ignore read errors */
-    }
+  const claudeMdContent = readFileIfExists(path.join(repoPath, 'CLAUDE.md'));
+  if (claudeMdContent) {
+    parts.push(`## Project Instructions (CLAUDE.md)\n${claudeMdContent}`);
   }
 
-  // Read .claude/state.md from the repo
-  const stateFile = path.join(repoPath, '.claude', 'state.md');
-  if (fs.existsSync(stateFile)) {
-    try {
-      parts.push(`## Repo State\n${fs.readFileSync(stateFile, 'utf-8')}`);
-    } catch {
-      /* ignore read errors */
-    }
+  // Repo state files
+  const stateContent = readFileIfExists(
+    path.join(repoPath, '.claude', 'state.md'),
+  );
+  if (stateContent) {
+    parts.push(`## Repo State\n${stateContent}`);
   }
 
-  // Read .claude/team-state.md
-  const teamStateFile = path.join(repoPath, '.claude', 'team-state.md');
-  if (fs.existsSync(teamStateFile)) {
-    try {
-      parts.push(`## Team State\n${fs.readFileSync(teamStateFile, 'utf-8')}`);
-    } catch {
-      /* ignore */
-    }
+  const teamStateContent = readFileIfExists(
+    path.join(repoPath, '.claude', 'team-state.md'),
+  );
+  if (teamStateContent) {
+    parts.push(`## Team State\n${teamStateContent}`);
   }
 
-  // Read .claude/personal-state.md — personal working notes, current focus,
-  // opinions that inform coding decisions
-  const personalStateFile = path.join(repoPath, '.claude', 'personal-state.md');
-  if (fs.existsSync(personalStateFile)) {
-    try {
-      parts.push(
-        `## Personal Context\n${fs.readFileSync(personalStateFile, 'utf-8')}`,
-      );
-    } catch {
-      /* ignore */
-    }
+  const personalStateContent = readFileIfExists(
+    path.join(repoPath, '.claude', 'personal-state.md'),
+  );
+  if (personalStateContent) {
+    parts.push(`## Personal Context\n${personalStateContent}`);
   }
 
   return parts.join('\n\n');
 }
 
-export async function writeMeridianJournal(entry: JournalEntry): Promise<void> {
+export async function writeJournal(entry: JournalEntry): Promise<void> {
   const homeDir = process.env.HOME || os.homedir();
   const today = new Date().toISOString().split('T')[0];
   const journalDir = path.join(homeDir, '.claude', 'memory', 'journal');
@@ -495,12 +582,12 @@ export function buildCodingPrompt(opts: {
   repoName: string;
   branch: string;
   description: string;
-  meridianContext: string;
+  teamContext: string;
 }): string {
   const parts: string[] = [];
 
-  if (opts.meridianContext) {
-    parts.push(`<context>\n${opts.meridianContext}\n</context>`);
+  if (opts.teamContext) {
+    parts.push(`<context>\n${opts.teamContext}\n</context>`);
   }
 
   parts.push(`<coding-task>

@@ -38,7 +38,7 @@ export interface CodingTaskMount {
   repoGitDir: string; // host path to <repo>/.git — mounted for git operations
   repoName: string;
   branch: string;
-  meridianContext: string;
+  teamContext: string;
 }
 
 export interface ContainerInput {
