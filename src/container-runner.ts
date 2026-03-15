@@ -243,6 +243,7 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   codingTask?: CodingTaskMount,
+  extraEnv?: Record<string, string>,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -284,6 +285,13 @@ function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
+  // Per-group extra env vars (e.g. API keys for scheduled tasks)
+  if (extraEnv) {
+    for (const [key, value] of Object.entries(extraEnv)) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
   for (const mount of mounts) {
     if (mount.readonly) {
       args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
@@ -315,6 +323,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     input.codingTask,
+    group.containerConfig?.env,
   );
 
   logger.debug(
