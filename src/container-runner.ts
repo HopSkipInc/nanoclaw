@@ -432,8 +432,14 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    container.stdin.write(JSON.stringify(input) + '\n');
+    // Fleet tasks run long-lived processes (bootstrap.sh → tmux → wait loop).
+    // Closing stdin can cause the container's bash shell to exit early.
+    // Keep stdin open for fleet tasks; close it for normal agent runs.
+    // The fleet entrypoint uses `head -1` to read input without blocking on EOF.
+    if (!input.fleetTask) {
+      container.stdin.end();
+    }
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';

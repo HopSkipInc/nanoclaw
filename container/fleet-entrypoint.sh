@@ -23,8 +23,9 @@ emit_output() {
   echo "$OUTPUT_END_MARKER"
 }
 
-# Read input JSON
-cat > /tmp/input.json
+# Read input JSON from stdin (read until first complete JSON object, then proceed)
+# We can't rely on EOF because the host keeps stdin open for fleet tasks.
+head -1 > /tmp/input.json
 
 # Parse fleet config from input JSON
 GOAL=$(jq -r '.fleetTask.description // empty' /tmp/input.json)
@@ -40,8 +41,8 @@ if [ ! -f /opt/ai-fleet/bootstrap.sh ]; then
   exit 1
 fi
 
-# Verify repo is mounted
-if [ ! -d "$REPO_PATH/.git" ]; then
+# Verify repo is mounted (worktrees have a .git file, not a directory)
+if [ ! -e "$REPO_PATH/.git" ]; then
   emit_output "error" "" "No git repository found at $REPO_PATH"
   exit 1
 fi
