@@ -345,7 +345,8 @@ async function runAgent(
   const isMain = group.isMain === true;
   // Coding/fleet tasks get a fresh session — no conversation history carryover
   // Repo mount sessions (estimates) DO persist for interactive follow-ups
-  const sessionId = codingTask || fleetTask ? undefined : sessions[group.folder];
+  const sessionId =
+    codingTask || fleetTask ? undefined : sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -636,7 +637,9 @@ async function processFleetTask(
     `Agents: ${agentList}`,
   ];
   if (estimateThreadRef) {
-    startParts.push(`_Spawned from <${estimateThreadRef}|estimate conversation>_`);
+    startParts.push(
+      `_Spawned from <${estimateThreadRef}|estimate conversation>_`,
+    );
   }
   await reply(startParts.join('\n'));
 
@@ -656,10 +659,13 @@ async function processFleetTask(
       chatJid,
       async (result) => {
         if (result.result) {
-          const text = (typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result)
-          ).replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+          const text = (
+            typeof result.result === 'string'
+              ? result.result
+              : JSON.stringify(result.result)
+          )
+            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+            .trim();
           if (text) {
             fleetResult = text;
             // Don't relay container output markers to Slack —
@@ -861,14 +867,20 @@ async function processEstimateTask(
 
   let worktreeInfo;
   try {
-    worktreeInfo = await createWorktree(repo, NANOCLAW_OWNER, `estimate-${description}`);
+    worktreeInfo = await createWorktree(
+      repo,
+      NANOCLAW_OWNER,
+      `estimate-${description}`,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await reply(`Failed to create worktree: ${msg}`);
     return;
   }
 
-  await reply(`Estimating *${repoName}*: ${description}\n_This is an interactive session — ask follow-up questions in this thread._`);
+  await reply(
+    `Estimating *${repoName}*: ${description}\n_This is an interactive session — ask follow-up questions in this thread._`,
+  );
 
   const teamContext = loadTeamContext(worktreeInfo.repoPath);
   const estimatePrompt = buildEstimatePrompt({
@@ -888,7 +900,10 @@ async function processEstimateTask(
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      logger.debug({ group: group.name }, 'Estimate idle timeout, closing container');
+      logger.debug(
+        { group: group.name },
+        'Estimate idle timeout, closing container',
+      );
       queue.closeStdin(chatJid);
     }, IDLE_TIMEOUT);
   };
@@ -905,9 +920,7 @@ async function processEstimateTask(
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-        const text = raw
-          .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-          .trim();
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         if (text) {
           await reply(text);
           resetIdleTimer();

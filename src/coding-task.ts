@@ -534,13 +534,11 @@ export function loadTeamContext(repoPath: string): string {
   if (journalContent) {
     // Extract only sections mentioning this repo
     const sections = journalContent.split(/(?=^## )/m);
-    const relevant = sections.filter(
-      (s) => s.toLowerCase().includes(repoName.toLowerCase()),
+    const relevant = sections.filter((s) =>
+      s.toLowerCase().includes(repoName.toLowerCase()),
     );
     if (relevant.length > 0) {
-      parts.push(
-        `## Today's Decisions (from journal)\n${relevant.join('\n')}`,
-      );
+      parts.push(`## Today's Decisions (from journal)\n${relevant.join('\n')}`);
     }
   }
 

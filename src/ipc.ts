@@ -36,10 +36,7 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
-  launchFleet?: (
-    chatJid: string,
-    request: FleetLaunchRequest,
-  ) => Promise<void>;
+  launchFleet?: (chatJid: string, request: FleetLaunchRequest) => Promise<void>;
 }
 
 let ipcWatcherRunning = false;

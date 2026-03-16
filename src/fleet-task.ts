@@ -131,7 +131,10 @@ export async function setupFleetTask(
   const teamContext = loadTeamContext(worktreeInfo.repoPath);
   const fleetStatusDir = createFleetStatusDir(worktreeInfo.id);
   const restoreGitPaths = patchWorktreeForContainer(worktreeInfo);
-  logger.info({ target, fleetStatusDir, repoName: config.repoName }, 'Fleet task setup');
+  logger.info(
+    { target, fleetStatusDir, repoName: config.repoName },
+    'Fleet task setup',
+  );
 
   const fleetMount: FleetTaskMount = {
     worktreePath: worktreeInfo.worktreePath,
@@ -158,7 +161,10 @@ export async function cleanupFleetTask(
       fs.rmSync(fleetStatusDir, { recursive: true, force: true });
       logger.info({ fleetStatusDir }, 'Fleet status directory cleaned up');
     } catch (err) {
-      logger.warn({ fleetStatusDir, err }, 'Failed to clean up fleet status directory');
+      logger.warn(
+        { fleetStatusDir, err },
+        'Failed to clean up fleet status directory',
+      );
     }
   }
 }

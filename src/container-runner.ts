@@ -308,9 +308,10 @@ function buildContainerArgs(
   // Fleet task: use fleet entrypoint instead of the default agent-runner
   // Set FLEET_SIMULATE=1 in .env to use the simulator for testing
   if (fleetTask) {
-    const entrypoint = process.env.FLEET_SIMULATE === '1'
-      ? '/app/fleet-simulator.sh'
-      : '/app/fleet-entrypoint.sh';
+    const entrypoint =
+      process.env.FLEET_SIMULATE === '1'
+        ? '/app/fleet-simulator.sh'
+        : '/app/fleet-entrypoint.sh';
     args.push('--entrypoint', entrypoint);
     args.push('-e', 'NANOCLAW_FLEET_TASK=1');
   }
@@ -376,7 +377,13 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain, input.codingTask, input.fleetTask, input.repoMount);
+  const mounts = buildVolumeMounts(
+    group,
+    input.isMain,
+    input.codingTask,
+    input.fleetTask,
+    input.repoMount,
+  );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(
