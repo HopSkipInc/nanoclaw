@@ -57,6 +57,11 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
 );
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
+export const FLEET_TIMEOUT = parseInt(
+  process.env.FLEET_TIMEOUT || '7200000',
+  10,
+); // 2hr default — fleet tasks run much longer than single-agent tasks
+export const FLEET_TARGET = process.env.FLEET_TARGET || 'local'; // 'local' for now, future: 'azure', 'ssh://host'
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,

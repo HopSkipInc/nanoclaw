@@ -31,8 +31,20 @@ import {
   writeJournal,
 } from './coding-task.js';
 import {
+  buildFleetPrBody,
+  cleanupFleetTask,
+  FleetTaskConfig,
+  parseFleetTask,
+  readFleetStatus,
+  setupFleetTask,
+  writeFleetJournal,
+} from './fleet-task.js';
+import { startFleetProgressRelay } from './fleet-progress.js';
+import {
   CodingTaskMount,
+  ContainerInput,
   ContainerOutput,
+  RepoMount,
   runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
@@ -186,7 +198,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  // Check if the latest trigger message is a coding task
+  // Check if the latest trigger message is a coding task or fleet task
   const triggerMessage = missedMessages.find((m) =>
     TRIGGER_PATTERN.test(m.content.trim()),
   );
@@ -203,6 +215,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         group,
         codingTask.repoName,
         codingTask.description,
+        triggerMessage.id,
+      );
+      return true;
+    }
+
+    const fleetTask = parseFleetTask(triggerMessage.content);
+    if (fleetTask) {
+      lastAgentTimestamp[chatJid] =
+        missedMessages[missedMessages.length - 1].timestamp;
+      saveState();
+      await processFleetTask(
+        chatJid,
+        channel,
+        group,
+        fleetTask,
+        triggerMessage.id,
+      );
+      return true;
+    }
+
+    const estimateTask = parseEstimateTask(triggerMessage.content);
+    if (estimateTask) {
+      lastAgentTimestamp[chatJid] =
+        missedMessages[missedMessages.length - 1].timestamp;
+      saveState();
+      await processEstimateTask(
+        chatJid,
+        channel,
+        group,
+        estimateTask.repoName,
+        estimateTask.description,
         triggerMessage.id,
       );
       return true;
@@ -296,10 +339,13 @@ async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   codingTask?: CodingTaskMount,
+  fleetTask?: ContainerInput['fleetTask'],
+  repoMount?: RepoMount,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  // Coding tasks get a fresh session — no conversation history carryover
-  const sessionId = codingTask ? undefined : sessions[group.folder];
+  // Coding/fleet tasks get a fresh session — no conversation history carryover
+  // Repo mount sessions (estimates) DO persist for interactive follow-ups
+  const sessionId = codingTask || fleetTask ? undefined : sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -327,10 +373,11 @@ async function runAgent(
   );
 
   // Wrap onOutput to track session ID from streamed results
-  // Coding tasks use throwaway sessions — don't persist their IDs
+  // Coding/fleet tasks use throwaway sessions — don't persist their IDs
+  const isThrowawaySession = !!(codingTask || fleetTask);
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
-        if (output.newSessionId && !codingTask) {
+        if (output.newSessionId && !isThrowawaySession) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
@@ -348,13 +395,15 @@ async function runAgent(
         chatJid,
         isMain,
         codingTask,
+        fleetTask,
+        repoMount,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
     );
 
-    if (output.newSessionId && !codingTask) {
+    if (output.newSessionId && !isThrowawaySession) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
     }
@@ -377,6 +426,9 @@ async function runAgent(
 // Pattern: "@NanoClaw code <repo> <description>"
 const CODING_TASK_PATTERN = /^code\s+(\S+)\s+(.+)$/i;
 
+// Pattern: "@NanoClaw estimate <repo> <description>"
+const ESTIMATE_TASK_PATTERN = /^estimate\s+(\S+)\s+(.+)$/i;
+
 /**
  * Detect if a message is a coding task request.
  * Returns { repoName, description } or null.
@@ -390,6 +442,22 @@ function parseCodingTask(
     .replace(/<@[A-Z0-9]+>/g, '')
     .trim();
   const match = stripped.match(CODING_TASK_PATTERN);
+  if (!match) return null;
+  return { repoName: match[1], description: match[2] };
+}
+
+/**
+ * Detect if a message is an estimate task request.
+ * Returns { repoName, description } or null.
+ */
+function parseEstimateTask(
+  content: string,
+): { repoName: string; description: string } | null {
+  const stripped = content
+    .replace(TRIGGER_PATTERN, '')
+    .replace(/<@[A-Z0-9]+>/g, '')
+    .trim();
+  const match = stripped.match(ESTIMATE_TASK_PATTERN);
   if (!match) return null;
   return { repoName: match[1], description: match[2] };
 }
@@ -531,6 +599,347 @@ async function processCodingTask(
   }
 }
 
+/**
+ * Process a fleet task: create worktree, run multi-agent fleet, push branch, create PR.
+ */
+async function processFleetTask(
+  chatJid: string,
+  channel: Channel,
+  group: RegisteredGroup,
+  config: FleetTaskConfig,
+  triggerMessageId?: string,
+  estimateThreadRef?: string,
+): Promise<void> {
+  const reply = async (text: string) => {
+    if (triggerMessageId && channel.sendThreadReply) {
+      await channel.sendThreadReply(chatJid, text, triggerMessageId);
+    } else {
+      await channel.sendMessage(chatJid, text);
+    }
+  };
+
+  let setup;
+  try {
+    setup = await setupFleetTask(config);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await reply(`Fleet setup failed: ${msg}`);
+    return;
+  }
+
+  const { worktreeInfo, fleetMount, restoreGitPaths } = setup;
+  const agentList = config.agents || 'super,critic,eng1,eng2,qa1';
+
+  const startParts = [
+    `Fleet starting on *${config.repoName}*: ${config.description}`,
+    `Branch: \`${worktreeInfo.branch}\``,
+    `Agents: ${agentList}`,
+  ];
+  if (estimateThreadRef) {
+    startParts.push(`_Spawned from <${estimateThreadRef}|estimate conversation>_`);
+  }
+  await reply(startParts.join('\n'));
+
+  // Start progress relay — polls fleet status files and posts updates to Slack
+  const progressRelay = startFleetProgressRelay(
+    fleetMount.fleetStatusDir,
+    reply,
+  );
+
+  // Run the fleet container
+  let fleetResult = '';
+  let output: string;
+  try {
+    output = await runAgent(
+      group,
+      '', // prompt is unused — fleet entrypoint reads from fleetTask input
+      chatJid,
+      async (result) => {
+        if (result.result) {
+          const text = (typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result)
+          ).replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+          if (text) {
+            fleetResult = text;
+            // Don't relay container output markers to Slack —
+            // the progress relay handles all Slack updates
+          }
+        }
+      },
+      undefined, // no codingTask
+      {
+        ...fleetMount,
+        description: config.description,
+        agents: config.agents,
+        timeoutMinutes: config.timeoutMinutes,
+      },
+    );
+  } finally {
+    restoreGitPaths();
+    progressRelay.stop();
+    await progressRelay.done;
+  }
+
+  if (output === 'error') {
+    // Read fleet status for more context
+    const status = readFleetStatus(fleetMount.fleetStatusDir);
+    const statusMsg = status
+      ? ` Fleet status: ${status.status} — ${status.message}`
+      : '';
+    await reply(`Fleet task failed.${statusMsg}`);
+    // Clean up on failure
+    await cleanupFleetTask(worktreeInfo, fleetMount.fleetStatusDir);
+    return;
+  }
+
+  // Finalize: push + PR (same as coding tasks)
+  await reply('Fleet complete. Pushing branch and creating PR...');
+  try {
+    const channelName = group.name || chatJid;
+    const fleetStatus = readFleetStatus(fleetMount.fleetStatusDir);
+    const prBody = buildFleetPrBody({
+      owner: NANOCLAW_OWNER,
+      channel: channelName,
+      branch: worktreeInfo.branch,
+      description: config.description,
+      fleetStatus: fleetStatus
+        ? `${fleetStatus.status}: ${fleetStatus.message}`
+        : fleetResult,
+    });
+
+    const prResult = await finalizeCodingTask(
+      worktreeInfo,
+      `${config.description.slice(0, 65)}`,
+      prBody,
+    );
+
+    const parts: string[] = [];
+    if (fleetResult) parts.push(fleetResult);
+    parts.push(`PR: ${prResult.prUrl}`);
+    await reply(parts.join('\n\n'));
+
+    await cleanupFleetTask(worktreeInfo, fleetMount.fleetStatusDir);
+    await writeFleetJournal(
+      worktreeInfo.repoName,
+      config.description,
+      `PR #${prResult.prNumber} created`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await reply(
+      `Fleet completed but PR creation failed: ${msg}\nCheck the worktree or retry.`,
+    );
+  }
+}
+
+/**
+ * Build the prompt for an estimate task.
+ * Loads the estimator template from ai-fleet if available.
+ */
+function buildEstimatePrompt(opts: {
+  repoName: string;
+  description: string;
+  teamContext: string;
+  chatJid: string;
+  threadRef?: string;
+}): string {
+  const parts: string[] = [];
+
+  if (opts.teamContext) {
+    parts.push(`<context>\n${opts.teamContext}\n</context>`);
+  }
+
+  // Try to load estimator template from ai-fleet
+  const homeDir = process.env.HOME || '/home/user';
+  const aiFleetDir =
+    process.env.AI_FLEET_DIR ||
+    path.join(homeDir, 'repos', 'HopSkipInc', 'ai-fleet');
+  const templatePath = path.join(
+    aiFleetDir,
+    'claude-md-templates',
+    'base',
+    'estimator.md',
+  );
+
+  let estimatorTemplate = '';
+  try {
+    if (fs.existsSync(templatePath)) {
+      estimatorTemplate = fs.readFileSync(templatePath, 'utf-8');
+    }
+  } catch {
+    /* template not available */
+  }
+
+  if (estimatorTemplate) {
+    // Substitute template variables
+    estimatorTemplate = estimatorTemplate
+      .replace(/\{\{AGENT_NAME\}\}/g, 'estimator')
+      .replace(/\{\{REPO_PATH\}\}/g, '/workspace/code')
+      .replace(/\{\{PANE_INDEX\}\}/g, '0');
+    parts.push(`<estimator-role>\n${estimatorTemplate}\n</estimator-role>`);
+  }
+
+  parts.push(`<estimate-task>
+You are the budget estimator for repo "${opts.repoName}" mounted at /workspace/code (read-only).
+This is an interactive Slack conversation — the human can ask follow-up questions.
+
+Your task: Estimate the effort needed for: ${opts.description}
+
+Instructions:
+1. Read the repo's CLAUDE.md and project structure to understand the codebase
+2. Assess the scope of work needed for the task
+3. Estimate the number of agents, duration, and cost
+4. Output a recommended fleet manifest YAML
+5. Include your confidence level and any risk factors
+
+Output your estimate as a clear, formatted response. This will be posted directly to Slack.
+Do NOT make any code changes or commits. This is read-only analysis.
+
+## Launching a fleet
+
+If the human approves the estimate (e.g., "go ahead", "launch it", "start the fleet"), you can
+launch the fleet directly by writing a JSON file to /workspace/ipc/tasks/. Example:
+
+\`\`\`bash
+cat > /workspace/ipc/tasks/launch-fleet-$(date +%s).json << 'FLEET_JSON'
+{
+  "type": "launch_fleet",
+  "repo": "${opts.repoName}",
+  "chatJid": "${opts.chatJid}",
+  "description": "${opts.description.replace(/"/g, '\\"')}",
+  "agents": "super,eng1,eng2,qa1",
+  "timeoutMinutes": 90,
+  "estimateThreadRef": "${opts.threadRef || ''}"
+}
+FLEET_JSON
+\`\`\`
+
+Replace the agents and timeoutMinutes with your recommended values from the estimate.
+The ${opts.chatJid} and ${opts.threadRef || ''} values will be set by the system — just
+use those exact strings and they will be replaced before the file is written.
+
+After writing the file, confirm to the user that the fleet has been launched.
+</estimate-task>`);
+
+  return parts.join('\n\n');
+}
+
+/**
+ * Process an estimate task as an interactive conversation.
+ *
+ * Unlike coding tasks (one-shot), estimates run as regular conversations
+ * with a read-only repo mount. The agent stays alive for follow-up questions,
+ * clarifications, and decision-making. The conversation persists until the
+ * idle timeout, and follow-up messages pipe through normally.
+ *
+ * Worktree is cleaned up when the container exits.
+ */
+async function processEstimateTask(
+  chatJid: string,
+  channel: Channel,
+  group: RegisteredGroup,
+  repoName: string,
+  description: string,
+  triggerMessageId?: string,
+): Promise<void> {
+  const reply = async (text: string) => {
+    if (triggerMessageId && channel.sendThreadReply) {
+      await channel.sendThreadReply(chatJid, text, triggerMessageId);
+    } else {
+      await channel.sendMessage(chatJid, text);
+    }
+  };
+
+  const repo = resolveRepo(repoName);
+  if (!repo) {
+    await reply(
+      `Repo "${repoName}" not found or not allowed. Check ~/.config/nanoclaw/repo-registry.json`,
+    );
+    return;
+  }
+
+  let worktreeInfo;
+  try {
+    worktreeInfo = await createWorktree(repo, NANOCLAW_OWNER, `estimate-${description}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await reply(`Failed to create worktree: ${msg}`);
+    return;
+  }
+
+  await reply(`Estimating *${repoName}*: ${description}\n_This is an interactive session — ask follow-up questions in this thread._`);
+
+  const teamContext = loadTeamContext(worktreeInfo.repoPath);
+  const estimatePrompt = buildEstimatePrompt({
+    repoName: worktreeInfo.repoName,
+    description,
+    teamContext,
+    chatJid,
+    threadRef: triggerMessageId,
+  });
+
+  const restoreGitPaths = patchWorktreeForContainer(worktreeInfo);
+
+  // Track idle timer for worktree cleanup
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const worktreeInfoRef = worktreeInfo;
+
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      logger.debug({ group: group.name }, 'Estimate idle timeout, closing container');
+      queue.closeStdin(chatJid);
+    }, IDLE_TIMEOUT);
+  };
+
+  await channel.setTyping?.(chatJid, true);
+
+  const output = await runAgent(
+    group,
+    estimatePrompt,
+    chatJid,
+    async (result) => {
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        const text = raw
+          .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+          .trim();
+        if (text) {
+          await reply(text);
+          resetIdleTimer();
+        }
+      }
+    },
+    undefined, // no codingTask — not one-shot
+    undefined, // no fleetTask
+    {
+      worktreePath: worktreeInfo.worktreePath,
+      repoGitDir: worktreeInfo.repoGitDir,
+      readonly: true,
+    },
+  );
+
+  await channel.setTyping?.(chatJid, false);
+  if (idleTimer) clearTimeout(idleTimer);
+
+  // Restore git paths and clean up worktree
+  restoreGitPaths();
+  await cleanupWorktree(worktreeInfoRef);
+
+  if (output === 'error') {
+    await reply('Estimate session ended with an error.');
+    return;
+  }
+
+  await reply(
+    `_Estimate session ended. To launch a fleet:_ \`@${ASSISTANT_NAME} fleet ${repoName} ${description}\``,
+  );
+}
+
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
     logger.debug('Message loop already running, skipping duplicate start');
@@ -596,7 +1005,7 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Check if the latest trigger message is a coding task
+          // Check if the latest trigger message is a coding task or fleet task
           const codingTrigger = groupMessages.find((m) =>
             TRIGGER_PATTERN.test(m.content.trim()),
           );
@@ -613,6 +1022,37 @@ async function startMessageLoop(): Promise<void> {
                 group,
                 codingTask.repoName,
                 codingTask.description,
+                codingTrigger.id,
+              );
+              continue;
+            }
+
+            const fleetTask = parseFleetTask(codingTrigger.content);
+            if (fleetTask) {
+              lastAgentTimestamp[chatJid] =
+                groupMessages[groupMessages.length - 1].timestamp;
+              saveState();
+              processFleetTask(
+                chatJid,
+                channel,
+                group,
+                fleetTask,
+                codingTrigger.id,
+              );
+              continue;
+            }
+
+            const estimateTask = parseEstimateTask(codingTrigger.content);
+            if (estimateTask) {
+              lastAgentTimestamp[chatJid] =
+                groupMessages[groupMessages.length - 1].timestamp;
+              saveState();
+              processEstimateTask(
+                chatJid,
+                channel,
+                group,
+                estimateTask.repoName,
+                estimateTask.description,
                 codingTrigger.id,
               );
               continue;
@@ -839,6 +1279,32 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    launchFleet: async (chatJid, request) => {
+      const group = registeredGroups[chatJid];
+      if (!group) {
+        logger.warn({ chatJid }, 'launch_fleet: group not registered');
+        return;
+      }
+      const channel = findChannel(channels, chatJid);
+      if (!channel) {
+        logger.warn({ chatJid }, 'launch_fleet: no channel for JID');
+        return;
+      }
+      // Launch fleet task — runs async, doesn't block IPC processing
+      processFleetTask(
+        chatJid,
+        channel,
+        group,
+        {
+          repoName: request.repoName,
+          description: request.description,
+          agents: request.agents,
+          timeoutMinutes: request.timeoutMinutes,
+        },
+        undefined, // no trigger message ID — fleet posts as new message
+        request.estimateThreadRef,
+      );
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

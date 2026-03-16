@@ -12,6 +12,7 @@ import {
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
+  FLEET_TIMEOUT,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   TIMEZONE,
@@ -27,6 +28,7 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { FleetTaskMount } from './fleet-task.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -41,6 +43,12 @@ export interface CodingTaskMount {
   teamContext: string;
 }
 
+export interface RepoMount {
+  worktreePath: string;
+  repoGitDir: string;
+  readonly: boolean; // true for estimates, false for coding tasks
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -50,6 +58,12 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   codingTask?: CodingTaskMount;
+  fleetTask?: FleetTaskMount & {
+    description: string;
+    agents?: string;
+    timeoutMinutes?: number;
+  };
+  repoMount?: RepoMount; // read-only repo access for interactive sessions (estimate, etc.)
 }
 
 export interface ContainerOutput {
@@ -69,6 +83,8 @@ function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
   codingTask?: CodingTaskMount,
+  fleetTask?: FleetTaskMount,
+  repoMount?: RepoMount,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -226,6 +242,39 @@ function buildVolumeMounts(
     });
   }
 
+  // Fleet task: mount worktree + repo .git + fleet status directory
+  if (fleetTask) {
+    mounts.push({
+      hostPath: fleetTask.worktreePath,
+      containerPath: '/workspace/code',
+      readonly: false,
+    });
+    mounts.push({
+      hostPath: fleetTask.repoGitDir,
+      containerPath: '/workspace/repo-git',
+      readonly: false,
+    });
+    mounts.push({
+      hostPath: fleetTask.fleetStatusDir,
+      containerPath: '/workspace/fleet-status',
+      readonly: false,
+    });
+  }
+
+  // Repo mount: gives interactive sessions access to a repo worktree
+  if (repoMount) {
+    mounts.push({
+      hostPath: repoMount.worktreePath,
+      containerPath: '/workspace/code',
+      readonly: repoMount.readonly,
+    });
+    mounts.push({
+      hostPath: repoMount.repoGitDir,
+      containerPath: '/workspace/repo-git',
+      readonly: repoMount.readonly,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -244,6 +293,7 @@ function buildContainerArgs(
   containerName: string,
   codingTask?: CodingTaskMount,
   extraEnv?: Record<string, string>,
+  fleetTask?: FleetTaskMount,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -253,6 +303,16 @@ function buildContainerArgs(
   // Signal to agent that it's in coding mode
   if (codingTask) {
     args.push('-e', 'NANOCLAW_CODING_TASK=1');
+  }
+
+  // Fleet task: use fleet entrypoint instead of the default agent-runner
+  // Set FLEET_SIMULATE=1 in .env to use the simulator for testing
+  if (fleetTask) {
+    const entrypoint = process.env.FLEET_SIMULATE === '1'
+      ? '/app/fleet-simulator.sh'
+      : '/app/fleet-entrypoint.sh';
+    args.push('--entrypoint', entrypoint);
+    args.push('-e', 'NANOCLAW_FLEET_TASK=1');
   }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
@@ -316,7 +376,7 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain, input.codingTask);
+  const mounts = buildVolumeMounts(group, input.isMain, input.codingTask, input.fleetTask, input.repoMount);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(
@@ -324,6 +384,7 @@ export async function runContainerAgent(
     containerName,
     input.codingTask,
     group.containerConfig?.env,
+    input.fleetTask,
   );
 
   logger.debug(
@@ -458,10 +519,19 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+    // Fleet tasks get a longer default timeout (2hr vs 30min)
+    const defaultTimeout = input.fleetTask ? FLEET_TIMEOUT : CONTAINER_TIMEOUT;
+    const configTimeout = group.containerConfig?.timeout || defaultTimeout;
+    // Fleet tasks may specify their own timeout via --timeout flag
+    const fleetTimeoutMs = input.fleetTask?.timeoutMinutes
+      ? input.fleetTask.timeoutMinutes * 60_000
+      : undefined;
     // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
     // graceful _close sentinel has time to trigger before the hard kill fires.
-    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+    const timeoutMs = Math.max(
+      fleetTimeoutMs || configTimeout,
+      IDLE_TIMEOUT + 30_000,
+    );
 
     const killOnTimeout = () => {
       timedOut = true;

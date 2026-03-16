@@ -16,6 +16,14 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
+export interface FleetLaunchRequest {
+  repoName: string;
+  description: string;
+  agents?: string;
+  timeoutMinutes?: number;
+  estimateThreadRef?: string; // Slack message link to the estimate conversation
+}
+
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -28,6 +36,10 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
+  launchFleet?: (
+    chatJid: string,
+    request: FleetLaunchRequest,
+  ) => Promise<void>;
 }
 
 let ipcWatcherRunning = false;
@@ -196,6 +208,11 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For launch_fleet
+    description?: string;
+    agents?: string;
+    timeoutMinutes?: number;
+    estimateThreadRef?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -476,6 +493,38 @@ export async function processTaskIpc(
         logger.warn(
           { data },
           'Invalid register_group request - missing required fields',
+        );
+      }
+      break;
+
+    case 'launch_fleet':
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized launch_fleet attempt blocked',
+        );
+        break;
+      }
+      if (data.repo && data.description && data.chatJid) {
+        if (!deps.launchFleet) {
+          logger.warn('launch_fleet IPC received but no handler registered');
+          break;
+        }
+        logger.info(
+          { sourceGroup, repo: data.repo, description: data.description },
+          'Fleet launch requested via IPC',
+        );
+        await deps.launchFleet(data.chatJid, {
+          repoName: data.repo,
+          description: data.description,
+          agents: data.agents,
+          timeoutMinutes: data.timeoutMinutes,
+          estimateThreadRef: data.estimateThreadRef,
+        });
+      } else {
+        logger.warn(
+          { data },
+          'Invalid launch_fleet request - missing repo, description, or chatJid',
         );
       }
       break;

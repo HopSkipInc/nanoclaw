@@ -20,6 +20,9 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
+| `src/fleet-task.ts` | Fleet task parsing and orchestration (multi-agent via ai-fleet) |
+| `container/fleet-entrypoint.sh` | Container entrypoint for fleet tasks (runs bootstrap.sh) |
+| `container/ai-fleet/` | Fleet toolkit (ephemeral, copied by build.sh from ~/repos/HopSkipInc/ai-fleet) |
 
 ## Skills
 

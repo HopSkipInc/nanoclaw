@@ -454,7 +454,9 @@ export function loadTeamContext(repoPath: string): string {
     path.join(homeDir, '.claude', 'CLAUDE.md'),
   );
   if (globalClaudeMd) {
-    parts.push(`## Global Instructions (~/.claude/CLAUDE.md)\n${globalClaudeMd}`);
+    parts.push(
+      `## Global Instructions (~/.claude/CLAUDE.md)\n${globalClaudeMd}`,
+    );
   }
 
   const homeClaudeMd = readFileIfExists(path.join(homeDir, 'CLAUDE.md'));
@@ -514,6 +516,32 @@ export function loadTeamContext(repoPath: string): string {
   );
   if (personalStateContent) {
     parts.push(`## Personal Context\n${personalStateContent}`);
+  }
+
+  // --- Today's journal entries for this repo ---
+  // Picks up decisions from recent sessions (e.g., estimate conversations)
+  // so that downstream tasks (e.g., fleet launches) see them automatically.
+  const repoName = path.basename(repoPath);
+  const today = new Date().toISOString().split('T')[0];
+  const journalFile = path.join(
+    homeDir,
+    '.claude',
+    'memory',
+    'journal',
+    `${today}.md`,
+  );
+  const journalContent = readFileIfExists(journalFile);
+  if (journalContent) {
+    // Extract only sections mentioning this repo
+    const sections = journalContent.split(/(?=^## )/m);
+    const relevant = sections.filter(
+      (s) => s.toLowerCase().includes(repoName.toLowerCase()),
+    );
+    if (relevant.length > 0) {
+      parts.push(
+        `## Today's Decisions (from journal)\n${relevant.join('\n')}`,
+      );
+    }
   }
 
   return parts.join('\n\n');
