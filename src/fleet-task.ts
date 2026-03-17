@@ -61,6 +61,10 @@ export function parseFleetTask(content: string): FleetTaskConfig | null {
   const match = stripped.match(FLEET_TASK_PATTERN);
   if (!match) return null;
 
+  // Validate repo exists — if not, return null so NL classifier can handle it
+  const repo = resolveRepo(match[1]);
+  if (!repo) return null;
+
   const repoName = match[1];
   let description = match[2];
 

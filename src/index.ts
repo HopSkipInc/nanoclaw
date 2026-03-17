@@ -25,6 +25,7 @@ import {
   cleanupWorktree,
   createWorktree,
   finalizeCodingTask,
+  loadRepoRegistry,
   loadTeamContext,
   patchWorktreeForContainer,
   resolveRepo,
@@ -41,12 +42,19 @@ import {
 } from './fleet-task.js';
 import { startFleetProgressRelay } from './fleet-progress.js';
 import {
+  classifyIntent,
+  confirmationMessage,
+  routingDecision,
+  ClassifiedIntent,
+} from './intent-classifier.js';
+import {
   CodingTaskMount,
   ContainerInput,
   ContainerOutput,
   RepoMount,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeRepoRegistrySnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -97,6 +105,17 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+
+// Pending intent confirmations — keyed by chatJid
+// When a medium-confidence classification is sent, we store it here.
+// The next message in the same chat is checked for approval.
+interface PendingConfirmation {
+  classification: ClassifiedIntent;
+  timestamp: number; // expires after 5 minutes
+  triggerMessageId?: string;
+}
+const pendingConfirmations: Record<string, PendingConfirmation> = {};
+const CONFIRMATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -187,6 +206,67 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // Check for pending confirmation approval
+  const pending = pendingConfirmations[chatJid];
+  if (pending) {
+    delete pendingConfirmations[chatJid];
+    const elapsed = Date.now() - pending.timestamp;
+    if (elapsed < CONFIRMATION_TIMEOUT_MS) {
+      const latestContent = missedMessages[missedMessages.length - 1].content
+        .toLowerCase()
+        .trim();
+      const isApproval = /^(yes|yeah|yep|y|go|go ahead|do it|sure|ok|launch|start|fix it|ship it)\b/i.test(
+        latestContent,
+      );
+      if (isApproval) {
+        const c = pending.classification;
+        lastAgentTimestamp[chatJid] =
+          missedMessages[missedMessages.length - 1].timestamp;
+        saveState();
+        if (c.intent === 'estimate') {
+          await processEstimateTask(
+            chatJid,
+            channel,
+            group,
+            c.repo!,
+            c.description,
+            pending.triggerMessageId,
+          );
+        } else if (c.intent === 'fleet') {
+          const fleetConfig = parseFleetTask(
+            `fleet ${c.repo} ${c.description}`,
+          );
+          if (fleetConfig) {
+            await processFleetTask(
+              chatJid,
+              channel,
+              group,
+              fleetConfig,
+              pending.triggerMessageId,
+            );
+          }
+        } else {
+          // Default: code
+          await processCodingTask(
+            chatJid,
+            channel,
+            group,
+            c.repo!,
+            c.description,
+            pending.triggerMessageId,
+          );
+        }
+        return true;
+      }
+      // Not an approval — fall through to normal processing
+    } else {
+      logger.info(
+        { elapsed: Math.round(elapsed / 1000), intent: pending.classification.intent },
+        'Pending confirmation expired',
+      );
+    }
+  }
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const allowlistCfg = loadSenderAllowlist();
@@ -249,6 +329,76 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         triggerMessage.id,
       );
       return true;
+    }
+  }
+
+  // Natural language intent classification (runs when regex parsers don't match)
+  // Only for trigger messages — don't classify random conversation
+  if (triggerMessage) {
+    const stripped = triggerMessage.content
+      .replace(TRIGGER_PATTERN, '')
+      .replace(/<@[A-Z0-9]+>/g, '')
+      .trim();
+    const classification = await classifyIntent(stripped);
+    if (classification) {
+      const decision = routingDecision(classification);
+      if (decision === 'direct' && classification.repo) {
+        lastAgentTimestamp[chatJid] =
+          missedMessages[missedMessages.length - 1].timestamp;
+        saveState();
+        if (classification.intent === 'estimate') {
+          await processEstimateTask(
+            chatJid,
+            channel,
+            group,
+            classification.repo,
+            classification.description,
+            triggerMessage.id,
+          );
+        } else if (classification.intent === 'fleet') {
+          const fleetConfig = parseFleetTask(
+            `fleet ${classification.repo} ${classification.description}`,
+          );
+          if (fleetConfig) {
+            await processFleetTask(
+              chatJid,
+              channel,
+              group,
+              fleetConfig,
+              triggerMessage.id,
+            );
+          }
+        } else {
+          await processCodingTask(
+            chatJid,
+            channel,
+            group,
+            classification.repo,
+            classification.description,
+            triggerMessage.id,
+          );
+        }
+        return true;
+      }
+      if (decision === 'confirm') {
+        // Store pending confirmation and ask the user
+        pendingConfirmations[chatJid] = {
+          classification,
+          timestamp: Date.now(),
+          triggerMessageId: triggerMessage.id,
+        };
+        lastAgentTimestamp[chatJid] =
+          missedMessages[missedMessages.length - 1].timestamp;
+        saveState();
+        const msg = confirmationMessage(classification);
+        if (triggerMessage.id && channel.sendThreadReply) {
+          await channel.sendThreadReply(chatJid, msg, triggerMessage.id);
+        } else {
+          await channel.sendMessage(chatJid, msg);
+        }
+        return true;
+      }
+      // decision === 'chat' — fall through to regular agent
     }
   }
 
@@ -373,6 +523,12 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  // Update repo registry snapshot so container knows available repos
+  const registry = loadRepoRegistry();
+  if (registry) {
+    writeRepoRegistrySnapshot(group.folder, isMain, registry.repos);
+  }
+
   // Wrap onOutput to track session ID from streamed results
   // Coding/fleet tasks use throwaway sessions — don't persist their IDs
   const isThrowawaySession = !!(codingTask || fleetTask);
@@ -433,6 +589,7 @@ const ESTIMATE_TASK_PATTERN = /^estimate\s+(\S+)\s+(.+)$/i;
 /**
  * Detect if a message is a coding task request.
  * Returns { repoName, description } or null.
+ * Only matches if the repo name exists in the registry (otherwise falls through to NL classifier).
  */
 function parseCodingTask(
   content: string,
@@ -444,12 +601,16 @@ function parseCodingTask(
     .trim();
   const match = stripped.match(CODING_TASK_PATTERN);
   if (!match) return null;
+  // Validate repo exists — if not, return null so NL classifier can handle it
+  const repo = resolveRepo(match[1]);
+  if (!repo) return null;
   return { repoName: match[1], description: match[2] };
 }
 
 /**
  * Detect if a message is an estimate task request.
  * Returns { repoName, description } or null.
+ * Only matches if the repo name exists in the registry.
  */
 function parseEstimateTask(
   content: string,
@@ -460,6 +621,8 @@ function parseEstimateTask(
     .trim();
   const match = stripped.match(ESTIMATE_TASK_PATTERN);
   if (!match) return null;
+  const repo = resolveRepo(match[1]);
+  if (!repo) return null;
   return { repoName: match[1], description: match[2] };
 }
 
@@ -801,31 +964,12 @@ Instructions:
 
 Output your estimate as a clear, formatted response. This will be posted directly to Slack.
 Do NOT make any code changes or commits. This is read-only analysis.
+Do NOT launch a fleet, create tasks, or take any action. Only produce the estimate.
 
-## Launching a fleet
-
-If the human approves the estimate (e.g., "go ahead", "launch it", "start the fleet"), you can
-launch the fleet directly by writing a JSON file to /workspace/ipc/tasks/. Example:
-
-\`\`\`bash
-cat > /workspace/ipc/tasks/launch-fleet-$(date +%s).json << 'FLEET_JSON'
-{
-  "type": "launch_fleet",
-  "repo": "${opts.repoName}",
-  "chatJid": "${opts.chatJid}",
-  "description": "${opts.description.replace(/"/g, '\\"')}",
-  "agents": "super,eng1,eng2,qa1",
-  "timeoutMinutes": 90,
-  "estimateThreadRef": "${opts.threadRef || ''}"
-}
-FLEET_JSON
-\`\`\`
-
-Replace the agents and timeoutMinutes with your recommended values from the estimate.
-The ${opts.chatJid} and ${opts.threadRef || ''} values will be set by the system — just
-use those exact strings and they will be replaced before the file is written.
-
-After writing the file, confirm to the user that the fleet has been launched.
+At the end of your estimate, include a ready-to-use command the user can copy-paste to kick off the work, e.g.:
+\`code ${opts.repoName} <one-line description of the recommended approach>\`
+or for multi-agent work:
+\`fleet ${opts.repoName} <one-line description>\`
 </estimate-task>`);
 
   return parts.join('\n\n');
@@ -1004,6 +1148,47 @@ async function startMessageLoop(): Promise<void> {
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
+          // Check for pending confirmation approval (before trigger check)
+          const loopPending = pendingConfirmations[chatJid];
+          if (loopPending) {
+            delete pendingConfirmations[chatJid];
+            const elapsed = Date.now() - loopPending.timestamp;
+            if (elapsed < CONFIRMATION_TIMEOUT_MS) {
+              const latestContent = groupMessages[groupMessages.length - 1].content
+                .toLowerCase()
+                .trim();
+              const isApproval = /^(yes|yeah|yep|y|go|go ahead|do it|sure|ok|launch|start|fix it|ship it)\b/i.test(
+                latestContent,
+              );
+              if (isApproval) {
+                const c = loopPending.classification;
+                lastAgentTimestamp[chatJid] =
+                  groupMessages[groupMessages.length - 1].timestamp;
+                saveState();
+                if (c.intent === 'estimate') {
+                  processEstimateTask(
+                    chatJid, channel, group, c.repo!, c.description,
+                    loopPending.triggerMessageId,
+                  );
+                } else if (c.intent === 'fleet') {
+                  const fc = parseFleetTask(`fleet ${c.repo} ${c.description}`);
+                  if (fc) processFleetTask(chatJid, channel, group, fc, loopPending.triggerMessageId);
+                } else {
+                  processCodingTask(
+                    chatJid, channel, group, c.repo!, c.description,
+                    loopPending.triggerMessageId,
+                  );
+                }
+                continue;
+              }
+            } else {
+              logger.info(
+                { elapsed: Math.round(elapsed / 1000), intent: loopPending.classification.intent },
+                'Pending confirmation expired',
+              );
+            }
+          }
+
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
@@ -1070,6 +1255,70 @@ async function startMessageLoop(): Promise<void> {
               );
               continue;
             }
+
+            // NL classifier — Haiku call is fast (~200ms)
+            const stripped = codingTrigger.content
+              .replace(TRIGGER_PATTERN, '')
+              .replace(/<@[A-Z0-9]+>/g, '')
+              .trim();
+            try {
+              const classification = await classifyIntent(stripped);
+              if (classification) {
+                const decision = routingDecision(classification);
+                if (decision === 'direct' && classification.repo) {
+                  lastAgentTimestamp[chatJid] =
+                    groupMessages[groupMessages.length - 1].timestamp;
+                  saveState();
+                  if (classification.intent === 'estimate') {
+                    processEstimateTask(
+                      chatJid,
+                      channel,
+                      group,
+                      classification.repo,
+                      classification.description,
+                      codingTrigger.id,
+                    );
+                  } else if (classification.intent === 'fleet') {
+                    const fc = parseFleetTask(
+                      `fleet ${classification.repo} ${classification.description}`,
+                    );
+                    if (fc) {
+                      processFleetTask(chatJid, channel, group, fc, codingTrigger.id);
+                    }
+                  } else {
+                    processCodingTask(
+                      chatJid,
+                      channel,
+                      group,
+                      classification.repo,
+                      classification.description,
+                      codingTrigger.id,
+                    );
+                  }
+                  continue;
+                }
+                if (decision === 'confirm') {
+                  pendingConfirmations[chatJid] = {
+                    classification,
+                    timestamp: Date.now(),
+                    triggerMessageId: codingTrigger.id,
+                  };
+                  lastAgentTimestamp[chatJid] =
+                    groupMessages[groupMessages.length - 1].timestamp;
+                  saveState();
+                  const msg = confirmationMessage(classification);
+                  if (codingTrigger.id && channel.sendThreadReply) {
+                    await channel.sendThreadReply(chatJid, msg, codingTrigger.id);
+                  } else {
+                    await channel.sendMessage(chatJid, msg);
+                  }
+                  continue;
+                }
+              }
+            } catch (err) {
+              logger.error({ error: err }, 'NL classifier error in message loop');
+            }
+            // 'chat' or classifier failed — fall through to queue
           }
 
           // Pull all messages since lastAgentTimestamp so non-trigger

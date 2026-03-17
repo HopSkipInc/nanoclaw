@@ -217,15 +217,28 @@ export async function createWorktree(
         }
       }
     }
-    // Delete the branch if it still exists
+    // Delete the local branch if it still exists
     execSync(`git branch -D ${JSON.stringify(branch)}`, {
       cwd: repoPath,
       stdio: 'pipe',
       timeout: 10000,
     });
-    logger.info({ branch }, 'Deleted existing branch for retry');
+    logger.info({ branch }, 'Deleted existing local branch for retry');
   } catch {
-    // Branch doesn't exist — normal case, continue
+    // Branch doesn't exist locally — normal case, continue
+  }
+
+  // Delete the remote branch if it exists (common for recurring scheduled tasks
+  // where the same slug is reused on each run)
+  try {
+    execSync(`git push origin --delete ${JSON.stringify(branch)}`, {
+      cwd: repoPath,
+      stdio: 'pipe',
+      timeout: 15000,
+    });
+    logger.info({ branch }, 'Deleted existing remote branch for retry');
+  } catch {
+    // Remote branch doesn't exist — normal case, continue
   }
 
   // Create worktree with new branch from origin/defaultBranch

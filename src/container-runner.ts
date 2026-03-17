@@ -17,6 +17,7 @@ import {
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
+import { RepoEntry } from './coding-task.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -846,6 +847,40 @@ export function writeGroupsSnapshot(
     JSON.stringify(
       {
         groups: visibleGroups,
+        lastSync: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+/**
+ * Write repo registry snapshot for the container to read.
+ * Only main group sees the full list (for coding tasks / scheduling).
+ */
+export function writeRepoRegistrySnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  repos: Record<string, RepoEntry>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  // Only main group can trigger coding tasks, so only main needs the list.
+  // Non-main groups get an empty object.
+  const visibleRepos = isMain ? repos : {};
+
+  const reposFile = path.join(groupIpcDir, 'available_repos.json');
+  fs.writeFileSync(
+    reposFile,
+    JSON.stringify(
+      {
+        repos: Object.entries(visibleRepos).map(([name, entry]) => ({
+          name,
+          description: entry.description || '',
+          defaultBranch: entry.defaultBranch,
+        })),
         lastSync: new Date().toISOString(),
       },
       null,
