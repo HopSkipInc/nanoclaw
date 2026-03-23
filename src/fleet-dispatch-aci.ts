@@ -33,6 +33,8 @@ export interface AciFleetConfig {
   branch?: string;
   /** GitHub issue number or ADO work item ID */
   issueNumber?: string;
+  /** Model strategy: all-opus, all-sonnet, mixed (default) */
+  modelStrategy?: string;
 }
 
 export interface AciFleetResult {
@@ -51,9 +53,12 @@ const ACI_RESOURCE_GROUP = process.env.ACI_RESOURCE_GROUP || 'rg-ai-fleet-prod';
 const ACI_LOCATION = process.env.ACI_LOCATION || 'eastus2';
 const ACI_SUBSCRIPTION_ID = process.env.ACI_SUBSCRIPTION_ID || '';
 const ACI_MANAGED_IDENTITY_ID = process.env.ACI_MANAGED_IDENTITY_ID || '';
-const ACI_ACR_SERVER = process.env.ACI_ACR_SERVER || 'aifleetprodacr.azurecr.io';
-const ACI_FLEET_IMAGE = process.env.ACI_FLEET_IMAGE || `${ACI_ACR_SERVER}/ai-fleet:latest`;
-const ACI_KEY_VAULT_URI = process.env.KEY_VAULT_URI || 'https://ai-fleet-prod-kv.vault.azure.net/';
+const ACI_ACR_SERVER =
+  process.env.ACI_ACR_SERVER || 'aifleetprodacr.azurecr.io';
+const ACI_FLEET_IMAGE =
+  process.env.ACI_FLEET_IMAGE || `${ACI_ACR_SERVER}/ai-fleet:latest`;
+const ACI_KEY_VAULT_URI =
+  process.env.KEY_VAULT_URI || 'https://ai-fleet-prod-kv.vault.azure.net/';
 const ACI_STORAGE_ACCOUNT = process.env.ACI_STORAGE_ACCOUNT || 'aifleetprodst';
 const ACI_FILE_SHARE = process.env.ACI_FILE_SHARE || 'fleet-status';
 const ACI_STORAGE_KEY = process.env.ACI_STORAGE_KEY || ''; // populated at runtime from KV
@@ -68,7 +73,8 @@ const ACI_MEMORY_GB = parseFloat(process.env.ACI_MEMORY_GB || '4');
  */
 async function getArmToken(): Promise<string> {
   const endpoint =
-    process.env.IDENTITY_ENDPOINT || 'http://169.254.169.254/metadata/identity/oauth2/token';
+    process.env.IDENTITY_ENDPOINT ||
+    'http://169.254.169.254/metadata/identity/oauth2/token';
   const identityHeader = process.env.IDENTITY_HEADER;
 
   const params = new URLSearchParams({
@@ -87,7 +93,9 @@ async function getArmToken(): Promise<string> {
 
   const res = await fetch(`${endpoint}?${params}`, { headers });
   if (!res.ok) {
-    throw new Error(`MI token request failed: ${res.status} ${await res.text()}`);
+    throw new Error(
+      `MI token request failed: ${res.status} ${await res.text()}`,
+    );
   }
   const data = (await res.json()) as { access_token: string };
   return data.access_token;
@@ -98,7 +106,8 @@ async function getArmToken(): Promise<string> {
  */
 async function getKeyVaultSecret(secretName: string): Promise<string> {
   const endpoint =
-    process.env.IDENTITY_ENDPOINT || 'http://169.254.169.254/metadata/identity/oauth2/token';
+    process.env.IDENTITY_ENDPOINT ||
+    'http://169.254.169.254/metadata/identity/oauth2/token';
   const identityHeader = process.env.IDENTITY_HEADER;
 
   const params = new URLSearchParams({
@@ -116,7 +125,9 @@ async function getKeyVaultSecret(secretName: string): Promise<string> {
 
   const tokenRes = await fetch(`${endpoint}?${params}`, { headers });
   if (!tokenRes.ok) {
-    throw new Error(`KV token request failed: ${tokenRes.status} ${await tokenRes.text()}`);
+    throw new Error(
+      `KV token request failed: ${tokenRes.status} ${await tokenRes.text()}`,
+    );
   }
   const { access_token } = (await tokenRes.json()) as { access_token: string };
 
@@ -125,7 +136,9 @@ async function getKeyVaultSecret(secretName: string): Promise<string> {
     headers: { Authorization: `Bearer ${access_token}` },
   });
   if (!secretRes.ok) {
-    throw new Error(`KV secret '${secretName}' fetch failed: ${secretRes.status}`);
+    throw new Error(
+      `KV secret '${secretName}' fetch failed: ${secretRes.status}`,
+    );
   }
   const secret = (await secretRes.json()) as { value: string };
   return secret.value;
@@ -143,7 +156,9 @@ async function generateGitHubInstallationToken(
 ): Promise<string> {
   // Create JWT signed with the App's RSA private key
   const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+  const header = Buffer.from(
+    JSON.stringify({ alg: 'RS256', typ: 'JWT' }),
+  ).toString('base64url');
   const payload = Buffer.from(
     JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId }),
   ).toString('base64url');
@@ -169,7 +184,9 @@ async function generateGitHubInstallationToken(
   );
 
   if (!res.ok) {
-    throw new Error(`GitHub installation token request failed: ${res.status} ${await res.text()}`);
+    throw new Error(
+      `GitHub installation token request failed: ${res.status} ${await res.text()}`,
+    );
   }
 
   const data = (await res.json()) as { token: string };
@@ -201,15 +218,21 @@ export async function dispatchFleetToACI(
   // GitHub uses App credentials — we fetch the private key, app ID, and
   // installation ID, then generate a short-lived installation token.
   // ADO uses a long-lived PAT (org is MSA-backed, not Entra).
-  const [anthropicKey, githubAppPrivateKey, githubAppId, githubInstallationId, adoPat, storageKey] =
-    await Promise.all([
-      getKeyVaultSecret('anthropic-api-key'),
-      getKeyVaultSecret('github-app-private-key').catch(() => ''),
-      getKeyVaultSecret('github-app-id').catch(() => ''),
-      getKeyVaultSecret('github-app-installation-id').catch(() => ''),
-      getKeyVaultSecret('azdo-pat').catch(() => ''),
-      ACI_STORAGE_KEY || getKeyVaultSecret('storage-account-key'),
-    ]);
+  const [
+    anthropicKey,
+    githubAppPrivateKey,
+    githubAppId,
+    githubInstallationId,
+    adoPat,
+    storageKey,
+  ] = await Promise.all([
+    getKeyVaultSecret('anthropic-api-key'),
+    getKeyVaultSecret('github-app-private-key').catch(() => ''),
+    getKeyVaultSecret('github-app-id').catch(() => ''),
+    getKeyVaultSecret('github-app-installation-id').catch(() => ''),
+    getKeyVaultSecret('azdo-pat').catch(() => ''),
+    ACI_STORAGE_KEY || getKeyVaultSecret('storage-account-key'),
+  ]);
 
   // Generate GitHub App installation token (short-lived, ~1 hour)
   let githubToken = '';
@@ -231,6 +254,7 @@ export async function dispatchFleetToACI(
       repoSlug: config.repoSlug,
       branch: config.branch,
       issueNumber: config.issueNumber,
+      modelStrategy: config.modelStrategy || 'mixed',
     },
   });
 

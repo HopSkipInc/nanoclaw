@@ -38,6 +38,7 @@ export interface FleetTaskConfig {
   target?: string; // 'local' or 'azure'
   issueNumber?: string; // GitHub issue number or ADO work item ID
   branch?: string; // branch to check out or create
+  modelStrategy?: string; // all-opus, all-sonnet, mixed (default)
 }
 
 export interface FleetTaskMount {
@@ -112,9 +113,10 @@ export function parseFleetTask(content: string): FleetTaskConfig | null {
   // --- Try URL / work item parsing first ---
   const workItem = parseWorkItem(remainder);
   if (workItem) {
-    const repoName = workItem.source === 'ado'
-      ? `ado:${workItem.repoSlug}`
-      : workItem.repoSlug;
+    const repoName =
+      workItem.source === 'ado'
+        ? `ado:${workItem.repoSlug}`
+        : workItem.repoSlug;
     const userDesc = extractDescription(remainder, workItem);
 
     // Parse optional flags from the remaining description
@@ -134,9 +136,10 @@ export function parseFleetTask(content: string): FleetTaskConfig | null {
       description = description.replace(timeoutMatch[0], '').trim();
     }
 
-    const defaultDesc = workItem.source === 'ado'
-      ? `ADO work item #${workItem.number}`
-      : `GitHub ${workItem.type === 'pull_request' ? 'PR' : 'issue'} #${workItem.number}`;
+    const defaultDesc =
+      workItem.source === 'ado'
+        ? `ADO work item #${workItem.number}`
+        : `GitHub ${workItem.type === 'pull_request' ? 'PR' : 'issue'} #${workItem.number}`;
 
     return {
       repoName,
@@ -234,6 +237,7 @@ export async function setupFleetTask(
       teamContext,
       branch: config.branch,
       issueNumber: config.issueNumber,
+      modelStrategy: config.modelStrategy,
     });
 
     return {

@@ -48,6 +48,7 @@ TEAM_CONTEXT=$(jq -r '.fleetTask.teamContext // empty' /tmp/input.json)
 REPO_SLUG=$(jq -r '.fleetTask.repoSlug // empty' /tmp/input.json)
 REPO_BRANCH=$(jq -r '.fleetTask.branch // empty' /tmp/input.json)
 ISSUE_NUMBER=$(jq -r '.fleetTask.issueNumber // empty' /tmp/input.json)
+MODEL_STRATEGY=$(jq -r '.fleetTask.modelStrategy // empty' /tmp/input.json)
 REPO_PATH="/workspace/code"
 
 # Fleet status directory: in ACI mode, use a per-fleet subdirectory on the
@@ -140,6 +141,7 @@ ARGS=(--repo "$REPO_PATH" --headless --wait --status-dir "$STATUS_DIR")
 [ -n "$AGENTS" ] && ARGS+=(--agents "$AGENTS")
 [ -n "$TIMEOUT_MINUTES" ] && ARGS+=(--timeout "$TIMEOUT_MINUTES")
 [ -n "$ISSUE_NUMBER" ] && ARGS+=(--issue "$ISSUE_NUMBER")
+[ -n "$MODEL_STRATEGY" ] && ARGS+=(--model-strategy "$MODEL_STRATEGY")
 # Note: --repo-slug is not a bootstrap.sh flag. The repo slug is used by
 # the entrypoint for cloning; bootstrap.sh only needs --repo (the local path).
 
