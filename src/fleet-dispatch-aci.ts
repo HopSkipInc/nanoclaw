@@ -53,6 +53,9 @@ const ACI_RESOURCE_GROUP = process.env.ACI_RESOURCE_GROUP || 'rg-ai-fleet-prod';
 const ACI_LOCATION = process.env.ACI_LOCATION || 'eastus2';
 const ACI_SUBSCRIPTION_ID = process.env.ACI_SUBSCRIPTION_ID || '';
 const ACI_MANAGED_IDENTITY_ID = process.env.ACI_MANAGED_IDENTITY_ID || '';
+// Client ID (UUID) for MI token requests — distinct from the full resource ID
+const ACI_MI_CLIENT_ID =
+  process.env.ACI_MI_CLIENT_ID || process.env.ACI_MANAGED_IDENTITY_CLIENT_ID || '';
 const ACI_ACR_SERVER =
   process.env.ACI_ACR_SERVER || 'aifleetprodacr.azurecr.io';
 const ACI_FLEET_IMAGE =
@@ -82,8 +85,8 @@ async function getArmToken(): Promise<string> {
     resource: 'https://management.azure.com/',
   });
 
-  if (ACI_MANAGED_IDENTITY_ID) {
-    params.set('client_id', ACI_MANAGED_IDENTITY_ID);
+  if (ACI_MI_CLIENT_ID) {
+    params.set('client_id', ACI_MI_CLIENT_ID);
   }
 
   const headers: Record<string, string> = { Metadata: 'true' };
@@ -114,8 +117,8 @@ async function getKeyVaultSecret(secretName: string): Promise<string> {
     'api-version': '2019-08-01',
     resource: 'https://vault.azure.net',
   });
-  if (ACI_MANAGED_IDENTITY_ID) {
-    params.set('client_id', ACI_MANAGED_IDENTITY_ID);
+  if (ACI_MI_CLIENT_ID) {
+    params.set('client_id', ACI_MI_CLIENT_ID);
   }
 
   const headers: Record<string, string> = { Metadata: 'true' };

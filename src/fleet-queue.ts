@@ -93,7 +93,8 @@ async function getQueueAuthHeader(): Promise<Record<string, string>> {
       'api-version': '2019-08-01',
       resource: 'https://storage.azure.com/',
     });
-    const clientId = process.env.ACI_MANAGED_IDENTITY_ID;
+    // Use the MI client ID (UUID), not the full resource path
+    const clientId = process.env.ACI_MI_CLIENT_ID || process.env.ACI_MANAGED_IDENTITY_CLIENT_ID;
     if (clientId) params.set('client_id', clientId);
 
     const headers: Record<string, string> = { Metadata: 'true' };
@@ -114,18 +115,24 @@ async function getQueueAuthHeader(): Promise<Record<string, string>> {
   // In production, MI auth above should always work
   const storageKey = process.env.ACI_STORAGE_KEY || '';
   if (!storageKey) {
-    throw new Error('No MI endpoint and no ACI_STORAGE_KEY — cannot auth to queue');
+    throw new Error(
+      'No MI endpoint and no ACI_STORAGE_KEY — cannot auth to queue',
+    );
   }
 
   // Use account key via x-ms-date + SharedKey auth
   // This is complex to implement manually — for local dev, prefer az CLI or connection string
-  throw new Error('SharedKey auth not implemented — use MI auth (run in Azure) or set IDENTITY_ENDPOINT for local testing');
+  throw new Error(
+    'SharedKey auth not implemented — use MI auth (run in Azure) or set IDENTITY_ENDPOINT for local testing',
+  );
 }
 
 /**
  * Enqueue a fleet work message.
  */
-export async function enqueueFleetWork(message: FleetWorkMessage): Promise<void> {
+export async function enqueueFleetWork(
+  message: FleetWorkMessage,
+): Promise<void> {
   const auth = await getQueueAuthHeader();
   const url = `${queueUrl(QUEUE_NAME)}/messages`;
 
@@ -146,7 +153,10 @@ export async function enqueueFleetWork(message: FleetWorkMessage): Promise<void>
     throw new Error(`Queue enqueue failed: ${res.status} ${await res.text()}`);
   }
 
-  logger.info({ messageId: message.id, source: message.source.type }, 'Fleet work enqueued');
+  logger.info(
+    { messageId: message.id, source: message.source.type },
+    'Fleet work enqueued',
+  );
 }
 
 /**
@@ -155,7 +165,11 @@ export async function enqueueFleetWork(message: FleetWorkMessage): Promise<void>
  */
 export async function dequeueFleetWork(
   visibilityTimeoutSeconds: number = 3600,
-): Promise<{ message: FleetWorkMessage; messageId: string; popReceipt: string } | null> {
+): Promise<{
+  message: FleetWorkMessage;
+  messageId: string;
+  popReceipt: string;
+} | null> {
   const auth = await getQueueAuthHeader();
   const url = `${queueUrl(QUEUE_NAME)}/messages?numofmessages=1&visibilitytimeout=${visibilityTimeoutSeconds}`;
 
@@ -178,8 +192,21 @@ export async function dequeueFleetWork(
     return null; // Empty queue
   }
 
-  const decoded = Buffer.from(messageTextMatch[1], 'base64').toString('utf-8');
-  const message = JSON.parse(decoded) as FleetWorkMessage;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(messageTextMatch[1], 'base64').toString('utf-8');
+  } catch {
+    logger.warn({ raw: messageTextMatch[1].slice(0, 100) }, 'Queue message is not valid base64 — skipping');
+    return null;
+  }
+
+  let message: FleetWorkMessage;
+  try {
+    message = JSON.parse(decoded) as FleetWorkMessage;
+  } catch {
+    logger.warn({ decoded: decoded.slice(0, 200) }, 'Queue message is not valid JSON — skipping');
+    return null;
+  }
 
   return {
     message,
@@ -204,7 +231,10 @@ export async function deleteQueueMessage(
   });
 
   if (!res.ok) {
-    logger.warn({ messageId, status: res.status }, 'Failed to delete queue message');
+    logger.warn(
+      { messageId, status: res.status },
+      'Failed to delete queue message',
+    );
   }
 }
 
@@ -236,7 +266,10 @@ export async function deadLetterMessage(
   });
 
   if (!res.ok) {
-    logger.error({ messageId: message.id, status: res.status }, 'Failed to dead-letter message');
+    logger.error(
+      { messageId: message.id, status: res.status },
+      'Failed to dead-letter message',
+    );
   } else {
     logger.info({ messageId: message.id, error }, 'Message dead-lettered');
   }

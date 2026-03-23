@@ -38,5 +38,13 @@ export function readEnvFile(keys: string[]): Record<string, string> {
     if (value) result[key] = value;
   }
 
+  // Fall back to process.env for any keys not found in .env.
+  // In Azure Container Apps, secrets are injected as env vars from Key Vault.
+  for (const key of keys) {
+    if (!result[key] && process.env[key]) {
+      result[key] = process.env[key]!;
+    }
+  }
+
   return result;
 }

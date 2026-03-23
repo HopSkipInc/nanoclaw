@@ -1,0 +1,42 @@
+# NanoClaw Host Container
+# Runs the Slack listener + fleet dispatcher + credential proxy + health endpoint.
+# Does NOT run Docker or fleet agents — those are dispatched to ACI.
+
+FROM node:22-slim
+
+# System deps: git (for repo operations), jq (for JSON parsing)
+RUN apt-get update && apt-get install -y \
+    git \
+    jq \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install all dependencies (dev deps needed for tsc build)
+COPY package*.json ./
+RUN npm ci
+
+# Build TypeScript
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npx tsc
+
+# Prune dev dependencies after build
+RUN npm prune --omit=dev
+
+# Copy non-TS files needed at runtime
+COPY container/skills/ ./container/skills/
+COPY groups/ ./groups/
+
+# Create data directories
+RUN mkdir -p data store groups
+
+# Health check port
+EXPOSE 8080
+
+# Run as non-root
+RUN chown -R node:node /app
+USER node
+
+CMD ["node", "dist/index.js"]

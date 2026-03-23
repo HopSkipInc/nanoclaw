@@ -1571,7 +1571,12 @@ function ensureContainerSystemRunning(): void {
 }
 
 async function main(): Promise<void> {
-  ensureContainerSystemRunning();
+  // Skip Docker check in Azure — ACI dispatch uses REST API, not Docker
+  if (process.env.CONTAINER_APP_NAME) {
+    logger.info('Running in Container App — skipping Docker runtime check');
+  } else {
+    ensureContainerSystemRunning();
+  }
   initDatabase();
   logger.info('Database initialized');
   loadState();
@@ -1593,9 +1598,15 @@ async function main(): Promise<void> {
     // Register Slack reply handler so the dispatcher can send progress to Slack threads
     registerReplyHandler('slack', async (replyTo, text) => {
       if (replyTo.type !== 'slack') return;
-      const slackChannel = channels.find((ch) => ch.constructor.name === 'SlackChannel');
+      const slackChannel = channels.find(
+        (ch) => ch.constructor.name === 'SlackChannel',
+      );
       if (slackChannel && replyTo.threadTs && slackChannel.sendThreadReply) {
-        await slackChannel.sendThreadReply(replyTo.channelId, text, replyTo.threadTs);
+        await slackChannel.sendThreadReply(
+          replyTo.channelId,
+          text,
+          replyTo.threadTs,
+        );
       } else if (slackChannel) {
         await slackChannel.sendMessage(replyTo.channelId, text);
       }
@@ -1728,8 +1739,15 @@ async function main(): Promise<void> {
     await channel.connect();
   }
   if (channels.length === 0) {
-    logger.fatal('No channels connected');
-    process.exit(1);
+    // In queue-only mode (Azure Container App with no local Slack),
+    // the dispatcher can run without channels — it replies via the
+    // registered reply handlers, not through direct channel connections.
+    if (process.env.FLEET_USE_QUEUE === '1') {
+      logger.warn('No channels connected — running in dispatcher-only mode');
+    } else {
+      logger.fatal('No channels connected');
+      process.exit(1);
+    }
   }
 
   // Start subsystems (independently of connection handler)
