@@ -50,6 +50,10 @@ import {
   suggestAgents,
 } from './work-item-context.js';
 import {
+  enqueueFleetWork,
+  buildFleetWorkMessage,
+} from './fleet-queue.js';
+import {
   classifyIntent,
   confirmationMessage,
   routingDecision,
@@ -799,8 +803,11 @@ async function processFleetTask(
   // full context and build a rich goal for the fleet agents.
   if (config.issueNumber) {
     try {
-      const workItem = parseWorkItem(config.repoName + ' #' + config.issueNumber)
-        || parseWorkItem(config.repoName.replace('ado:', '') + ' ' + config.issueNumber);
+      const workItem =
+        parseWorkItem(config.repoName + ' #' + config.issueNumber) ||
+        parseWorkItem(
+          config.repoName.replace('ado:', '') + ' ' + config.issueNumber,
+        );
       if (workItem) {
         // TODO: tokens should come from KV in Azure, env vars for now
         const tokens = {
@@ -814,15 +821,55 @@ async function processFleetTask(
             description: formatGoal(context, config.description),
             agents: config.agents || suggestAgents(context),
           };
-          await reply(`Fetched context: *${context.title}* (${context.typeHint})`);
+          await reply(
+            `Fetched context: *${context.title}* (${context.typeHint})`,
+          );
         }
       }
     } catch (err) {
       // Context fetch is best-effort — don't block the fleet
-      logger.warn({ err, issueNumber: config.issueNumber }, 'Failed to fetch work item context');
+      logger.warn(
+        { err, issueNumber: config.issueNumber },
+        'Failed to fetch work item context',
+      );
     }
   }
 
+  // --- Queue-based dispatch (production) ---
+  // When running in Azure, enqueue and return. The dispatcher loop handles
+  // ACI creation, progress relay, and cleanup. This decouples intake from
+  // execution so any trigger source (Slack, GitHub, Notion, ADO) can write
+  // the same queue format.
+  if (process.env.FLEET_USE_QUEUE === '1') {
+    try {
+      const queueMessage = buildFleetWorkMessage({
+        repoSlug: config.repoName,
+        description: config.description,
+        issueNumber: config.issueNumber,
+        branch: config.branch,
+        agents: config.agents,
+        timeoutMinutes: config.timeoutMinutes,
+        modelStrategy: config.modelStrategy,
+        target: config.target,
+        teamContext: '',
+        source: {
+          type: 'slack',
+          requester: NANOCLAW_OWNER,
+          replyTo: triggerMessageId
+            ? { type: 'slack', channelId: chatJid, threadTs: triggerMessageId }
+            : { type: 'slack', channelId: chatJid },
+        },
+      });
+      await enqueueFleetWork(queueMessage);
+      await reply(`Fleet queued for *${config.repoName}*. The dispatcher will pick it up shortly.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply(`Failed to enqueue fleet: ${msg}`);
+    }
+    return;
+  }
+
+  // --- Direct dispatch (local dev) ---
   let setup;
   try {
     setup = await setupFleetTask(config);
@@ -867,14 +914,21 @@ async function processFleetTask(
 
     // Read final status — PR URL comes from the fleet (super agent created it)
     const finalStatus = readFleetStatus(azureStatusDir);
-    if (finalStatus && (finalStatus.status === 'success' || finalStatus.status === 'completed')) {
+    if (
+      finalStatus &&
+      (finalStatus.status === 'success' || finalStatus.status === 'completed')
+    ) {
       const parts: string[] = [];
       if (finalStatus.message) parts.push(finalStatus.message);
       // PR URL is written to fleet-status.json by fleet-complete
       const prUrl = readFleetPrUrl(azureStatusDir);
       if (prUrl) parts.push(`PR: ${prUrl}`);
       await reply(parts.join('\n\n'));
-      await writeFleetJournal(config.repoName, config.description, finalStatus.message);
+      await writeFleetJournal(
+        config.repoName,
+        config.description,
+        finalStatus.message,
+      );
     } else {
       const statusMsg = finalStatus
         ? `Fleet status: ${finalStatus.status} — ${finalStatus.message}`
@@ -886,7 +940,10 @@ async function processFleetTask(
     try {
       await cleanupAciFleetTask(aciResult.containerGroupName);
     } catch (err) {
-      logger.warn({ err, containerGroupName: aciResult.containerGroupName }, 'ACI cleanup failed');
+      logger.warn(
+        { err, containerGroupName: aciResult.containerGroupName },
+        'ACI cleanup failed',
+      );
     }
     return;
   }
