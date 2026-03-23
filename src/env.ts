@@ -13,9 +13,9 @@ export function readEnvFile(keys: string[]): Record<string, string> {
   let content: string;
   try {
     content = fs.readFileSync(envFile, 'utf-8');
-  } catch (err) {
-    logger.debug({ err }, '.env file not found, using defaults');
-    return {};
+  } catch {
+    // No .env file — fall through to process.env fallback below
+    content = '';
   }
 
   const result: Record<string, string> = {};
