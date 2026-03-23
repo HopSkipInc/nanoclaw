@@ -49,10 +49,9 @@ import {
   formatGoal,
   suggestAgents,
 } from './work-item-context.js';
-import {
-  enqueueFleetWork,
-  buildFleetWorkMessage,
-} from './fleet-queue.js';
+import { enqueueFleetWork, buildFleetWorkMessage } from './fleet-queue.js';
+import { startDispatcher, registerReplyHandler } from './fleet-dispatcher.js';
+import { startHealthServer, setHealthState, setNotReady } from './health.js';
 import {
   classifyIntent,
   confirmationMessage,
@@ -861,7 +860,9 @@ async function processFleetTask(
         },
       });
       await enqueueFleetWork(queueMessage);
-      await reply(`Fleet queued for *${config.repoName}*. The dispatcher will pick it up shortly.`);
+      await reply(
+        `Fleet queued for *${config.repoName}*. The dispatcher will pick it up shortly.`,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await reply(`Failed to enqueue fleet: ${msg}`);
@@ -1583,12 +1584,46 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Start health server for Container App liveness + readiness probes
+  const healthServer = startHealthServer();
+
+  // Start fleet dispatcher if queue mode is enabled
+  let dispatcher: { stop: () => void } | null = null;
+  if (process.env.FLEET_USE_QUEUE === '1') {
+    // Register Slack reply handler so the dispatcher can send progress to Slack threads
+    registerReplyHandler('slack', async (replyTo, text) => {
+      if (replyTo.type !== 'slack') return;
+      const slackChannel = channels.find((ch) => ch.constructor.name === 'SlackChannel');
+      if (slackChannel && replyTo.threadTs && slackChannel.sendThreadReply) {
+        await slackChannel.sendThreadReply(replyTo.channelId, text, replyTo.threadTs);
+      } else if (slackChannel) {
+        await slackChannel.sendMessage(replyTo.channelId, text);
+      }
+    });
+    dispatcher = startDispatcher();
+    logger.info('Fleet dispatcher started (queue mode)');
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+
+    // Stop accepting new work
+    setNotReady();
+
+    // Stop dispatcher (waits for current poll to finish, not in-flight fleets)
+    if (dispatcher) {
+      dispatcher.stop();
+      logger.info('Fleet dispatcher stopped');
+    }
+
+    // Close servers and channels
     proxyServer.close();
+    healthServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+
+    logger.info('Shutdown complete');
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
