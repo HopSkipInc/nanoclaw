@@ -54,6 +54,26 @@ Active issues:
 
 Next: C8 (Azure), then Wayfind as semantic layer for smarter repo resolution.
 
+## Elicitation Prompts
+
+<!-- These prompts guide the AI to capture richer context at decision moments.
+     The AI should ask AT MOST ONE of these when a significant decision is stated
+     without reasoning. Do not ask during routine implementation — only at moments
+     where a choice was made between alternatives.
+
+     The answers aren't for you (you already know) — they're for your teammates
+     who will read the digest tomorrow. -->
+
+When a technical or product decision is made without stated reasoning, ask one of:
+- "What alternatives did you consider?"
+- "What constraint or requirement drove this choice?"
+- "What would need to change for you to reverse this decision?"
+- "Who else on the team does this affect, and how?"
+- "What's the risk if this assumption is wrong?"
+
+Do not ask if the decision already includes reasoning, tradeoffs, or constraints.
+Do not ask more than once per decision. Do not ask during routine implementation.
+
 ## Shared Gotchas
 
 - Container image must be rebuilt after ai-fleet repo changes (`./container/build.sh`)
@@ -63,3 +83,17 @@ Next: C8 (Azure), then Wayfind as semantic layer for smarter repo resolution.
 - `LOG_LEVEL=debug` in .env creates verbose logs — remove after debugging
 - Clearing bot session requires SSH + sqlite3 + service restart (no `/reset` command yet)
 - Session persistence can cause stale behavior after CLAUDE.md changes — clear session if agent ignores new instructions
+
+
+### Context shift detected (2026-03-17)
+Strategic pivot from NanoClaw dev automation to SDR bot platform. Team decisions locked SDR architecture (4-phase rollout, housed in research repo, NanoClaw as orchestrator, dedicated agent instance, email channel integration). Multiple infrastructure decisions deferred pending team input on email identity and approval gates.
+
+## SDR Bot Initiative (2026-03-17)
+
+Strategic decision: Build SDR automation on NanoClaw infrastructure rather than third-party tools. Architecture locked:
+- 4-phase rollout (brief-to-list → draft → reply triage → cadence), phases 1-2 require AE approval
+- Logic housed in HopSkipInc/research repo under campaign-briefs/ workspace
+- Dedicated SDR agent instance within NanoClaw container model (separate from dev agent)
+- Phase 3: email channel (M365/Gmail) for reply classification and follow-up drafting
+- Pending: email identity (SDR account vs. per-AE), autonomy approval gates, persona scope (hotel-only or multi-sided)
+- Outbound sequencing tool decision deferred (HubSpot sequences vs. Instantly/Smartlead)

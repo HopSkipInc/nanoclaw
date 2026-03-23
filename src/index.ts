@@ -33,14 +33,22 @@ import {
 } from './coding-task.js';
 import {
   buildFleetPrBody,
+  cleanupAciFleetTask,
   cleanupFleetTask,
   FleetTaskConfig,
   parseFleetTask,
+  readFleetPrUrl,
   readFleetStatus,
   setupFleetTask,
   writeFleetJournal,
 } from './fleet-task.js';
 import { startFleetProgressRelay } from './fleet-progress.js';
+import { parseWorkItem } from './work-item-parser.js';
+import {
+  fetchWorkItemContext,
+  formatGoal,
+  suggestAgents,
+} from './work-item-context.js';
 import {
   classifyIntent,
   confirmationMessage,
@@ -215,9 +223,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const latestContent = missedMessages[missedMessages.length - 1].content
         .toLowerCase()
         .trim();
-      const isApproval = /^(yes|yeah|yep|y|go|go ahead|do it|sure|ok|launch|start|fix it|ship it)\b/i.test(
-        latestContent,
-      );
+      const isApproval =
+        /^(yes|yeah|yep|y|go|go ahead|do it|sure|ok|launch|start|fix it|ship it)\b/i.test(
+          latestContent,
+        );
       if (isApproval) {
         const c = pending.classification;
         lastAgentTimestamp[chatJid] =
@@ -261,7 +270,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       // Not an approval — fall through to normal processing
     } else {
       logger.info(
-        { elapsed: Math.round(elapsed / 1000), intent: pending.classification.intent },
+        {
+          elapsed: Math.round(elapsed / 1000),
+          intent: pending.classification.intent,
+        },
         'Pending confirmation expired',
       );
     }
@@ -782,6 +794,35 @@ async function processFleetTask(
     }
   };
 
+  // --- Enrich description with work item context ---
+  // If the command referenced a work item (URL or shorthand), fetch its
+  // full context and build a rich goal for the fleet agents.
+  if (config.issueNumber) {
+    try {
+      const workItem = parseWorkItem(config.repoName + ' #' + config.issueNumber)
+        || parseWorkItem(config.repoName.replace('ado:', '') + ' ' + config.issueNumber);
+      if (workItem) {
+        // TODO: tokens should come from KV in Azure, env vars for now
+        const tokens = {
+          githubToken: process.env.GITHUB_TOKEN,
+          adoPat: process.env.ADO_PAT,
+        };
+        if (tokens.githubToken || tokens.adoPat) {
+          const context = await fetchWorkItemContext(workItem, tokens);
+          config = {
+            ...config,
+            description: formatGoal(context, config.description),
+            agents: config.agents || suggestAgents(context),
+          };
+          await reply(`Fetched context: *${context.title}* (${context.typeHint})`);
+        }
+      }
+    } catch (err) {
+      // Context fetch is best-effort — don't block the fleet
+      logger.warn({ err, issueNumber: config.issueNumber }, 'Failed to fetch work item context');
+    }
+  }
+
   let setup;
   try {
     setup = await setupFleetTask(config);
@@ -791,8 +832,67 @@ async function processFleetTask(
     return;
   }
 
-  const { worktreeInfo, fleetMount, restoreGitPaths } = setup;
   const agentList = config.agents || 'super,critic,eng1,eng2,qa1';
+
+  // --- ACI dispatch path ---
+  // Host is a thin dispatcher + Slack relay. Fleet container handles
+  // clone, work, push, PR creation. See fleet-dispatch-architecture.md.
+  if (setup.mode === 'azure') {
+    const { aciResult } = setup;
+
+    const startParts = [
+      `Fleet dispatched to Azure on *${config.repoName}*: ${config.description}`,
+      `Fleet ID: \`${aciResult.fleetId}\``,
+      `Agents: ${agentList}`,
+    ];
+    if (estimateThreadRef) {
+      startParts.push(
+        `_Spawned from <${estimateThreadRef}|estimate conversation>_`,
+      );
+    }
+    await reply(startParts.join('\n'));
+
+    // Poll Azure Files for fleet status (same progress relay, different path)
+    // The fleet-status share is mounted locally at a well-known path when the
+    // host runs in Container Apps, or can be accessed via Azure Files REST API.
+    const azureStatusDir = `/mnt/fleet-status/${aciResult.fleetId}`;
+    const progressRelay = startFleetProgressRelay(azureStatusDir, reply);
+
+    try {
+      // Wait for terminal status (fleet-status.json status becomes terminal)
+      await progressRelay.done;
+    } finally {
+      progressRelay.stop();
+    }
+
+    // Read final status — PR URL comes from the fleet (super agent created it)
+    const finalStatus = readFleetStatus(azureStatusDir);
+    if (finalStatus && (finalStatus.status === 'success' || finalStatus.status === 'completed')) {
+      const parts: string[] = [];
+      if (finalStatus.message) parts.push(finalStatus.message);
+      // PR URL is written to fleet-status.json by fleet-complete
+      const prUrl = readFleetPrUrl(azureStatusDir);
+      if (prUrl) parts.push(`PR: ${prUrl}`);
+      await reply(parts.join('\n\n'));
+      await writeFleetJournal(config.repoName, config.description, finalStatus.message);
+    } else {
+      const statusMsg = finalStatus
+        ? `Fleet status: ${finalStatus.status} — ${finalStatus.message}`
+        : 'Fleet did not report a final status.';
+      await reply(`Fleet task failed. ${statusMsg}`);
+    }
+
+    // Clean up ACI container group
+    try {
+      await cleanupAciFleetTask(aciResult.containerGroupName);
+    } catch (err) {
+      logger.warn({ err, containerGroupName: aciResult.containerGroupName }, 'ACI cleanup failed');
+    }
+    return;
+  }
+
+  // --- Local Docker path (existing behavior) ---
+  const { worktreeInfo, fleetMount, restoreGitPaths } = setup;
 
   const startParts = [
     `Fleet starting on *${config.repoName}*: ${config.description}`,
@@ -1154,12 +1254,15 @@ async function startMessageLoop(): Promise<void> {
             delete pendingConfirmations[chatJid];
             const elapsed = Date.now() - loopPending.timestamp;
             if (elapsed < CONFIRMATION_TIMEOUT_MS) {
-              const latestContent = groupMessages[groupMessages.length - 1].content
+              const latestContent = groupMessages[
+                groupMessages.length - 1
+              ].content
                 .toLowerCase()
                 .trim();
-              const isApproval = /^(yes|yeah|yep|y|go|go ahead|do it|sure|ok|launch|start|fix it|ship it)\b/i.test(
-                latestContent,
-              );
+              const isApproval =
+                /^(yes|yeah|yep|y|go|go ahead|do it|sure|ok|launch|start|fix it|ship it)\b/i.test(
+                  latestContent,
+                );
               if (isApproval) {
                 const c = loopPending.classification;
                 lastAgentTimestamp[chatJid] =
@@ -1167,15 +1270,30 @@ async function startMessageLoop(): Promise<void> {
                 saveState();
                 if (c.intent === 'estimate') {
                   processEstimateTask(
-                    chatJid, channel, group, c.repo!, c.description,
+                    chatJid,
+                    channel,
+                    group,
+                    c.repo!,
+                    c.description,
                     loopPending.triggerMessageId,
                   );
                 } else if (c.intent === 'fleet') {
                   const fc = parseFleetTask(`fleet ${c.repo} ${c.description}`);
-                  if (fc) processFleetTask(chatJid, channel, group, fc, loopPending.triggerMessageId);
+                  if (fc)
+                    processFleetTask(
+                      chatJid,
+                      channel,
+                      group,
+                      fc,
+                      loopPending.triggerMessageId,
+                    );
                 } else {
                   processCodingTask(
-                    chatJid, channel, group, c.repo!, c.description,
+                    chatJid,
+                    channel,
+                    group,
+                    c.repo!,
+                    c.description,
                     loopPending.triggerMessageId,
                   );
                 }
@@ -1183,7 +1301,10 @@ async function startMessageLoop(): Promise<void> {
               }
             } else {
               logger.info(
-                { elapsed: Math.round(elapsed / 1000), intent: loopPending.classification.intent },
+                {
+                  elapsed: Math.round(elapsed / 1000),
+                  intent: loopPending.classification.intent,
+                },
                 'Pending confirmation expired',
               );
             }
@@ -1283,7 +1404,13 @@ async function startMessageLoop(): Promise<void> {
                       `fleet ${classification.repo} ${classification.description}`,
                     );
                     if (fc) {
-                      processFleetTask(chatJid, channel, group, fc, codingTrigger.id);
+                      processFleetTask(
+                        chatJid,
+                        channel,
+                        group,
+                        fc,
+                        codingTrigger.id,
+                      );
                     }
                   } else {
                     processCodingTask(
@@ -1308,7 +1435,11 @@ async function startMessageLoop(): Promise<void> {
                   saveState();
                   const msg = confirmationMessage(classification);
                   if (codingTrigger.id && channel.sendThreadReply) {
-                    await channel.sendThreadReply(chatJid, msg, codingTrigger.id);
+                    await channel.sendThreadReply(
+                      chatJid,
+                      msg,
+                      codingTrigger.id,
+                    );
                   } else {
                     await channel.sendMessage(chatJid, msg);
                   }
@@ -1316,7 +1447,10 @@ async function startMessageLoop(): Promise<void> {
                 }
               }
             } catch (err) {
-              logger.error({ error: err }, 'NL classifier error in message loop');
+              logger.error(
+                { error: err },
+                'NL classifier error in message loop',
+              );
             }
             // 'chat' or classifier failed — fall through to queue
           }
