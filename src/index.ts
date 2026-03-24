@@ -352,7 +352,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       return true;
     }
 
-    const estimateTask = parseEstimateTask(triggerMessage.content, triggerPattern);
+    const estimateTask = parseEstimateTask(
+      triggerMessage.content,
+      triggerPattern,
+    );
     if (estimateTask) {
       lastAgentTimestamp[chatJid] =
         missedMessages[missedMessages.length - 1].timestamp;
@@ -1049,7 +1052,19 @@ async function processFleetTask(
   try {
     const channelName = group.name || chatJid;
     const fleetStatus = readFleetStatus(fleetMount.fleetStatusDir);
-    const prBody = buildFleetPrBody({
+
+    // Read the fleet summary written by the super agent
+    let fleetSummaryBody = '';
+    const summaryPath = path.join(worktreeInfo.worktreePath, '.fleet-summary.md');
+    try {
+      if (fs.existsSync(summaryPath)) {
+        fleetSummaryBody = fs.readFileSync(summaryPath, 'utf-8').trim();
+      }
+    } catch {
+      /* summary file not available */
+    }
+
+    const prBody = fleetSummaryBody || buildFleetPrBody({
       owner: NANOCLAW_OWNER,
       channel: channelName,
       branch: worktreeInfo.branch,
@@ -1059,9 +1074,18 @@ async function processFleetTask(
         : fleetResult,
     });
 
+    // Extract a PR title from the summary's first heading or first line
+    let prTitle = config.description.slice(0, 65);
+    if (fleetSummaryBody) {
+      const headingMatch = fleetSummaryBody.match(/^##\s+Summary\s*\n+(.+)/m);
+      if (headingMatch) {
+        prTitle = headingMatch[1].trim().slice(0, 65);
+      }
+    }
+
     const prResult = await finalizeCodingTask(
       worktreeInfo,
-      `${config.description.slice(0, 65)}`,
+      prTitle,
       prBody,
     );
 
@@ -1412,7 +1436,10 @@ async function startMessageLoop(): Promise<void> {
             loopTriggerPattern.test(m.content.trim()),
           );
           if (codingTrigger) {
-            const codingTask = parseCodingTask(codingTrigger.content, loopTriggerPattern);
+            const codingTask = parseCodingTask(
+              codingTrigger.content,
+              loopTriggerPattern,
+            );
             if (codingTask) {
               lastAgentTimestamp[chatJid] =
                 groupMessages[groupMessages.length - 1].timestamp;
@@ -1444,7 +1471,10 @@ async function startMessageLoop(): Promise<void> {
               continue;
             }
 
-            const estimateTask = parseEstimateTask(codingTrigger.content, loopTriggerPattern);
+            const estimateTask = parseEstimateTask(
+              codingTrigger.content,
+              loopTriggerPattern,
+            );
             if (estimateTask) {
               lastAgentTimestamp[chatJid] =
                 groupMessages[groupMessages.length - 1].timestamp;
@@ -1579,7 +1609,11 @@ async function startMessageLoop(): Promise<void> {
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-    const pending = getMessagesSince(chatJid, sinceTimestamp, getGroupBotName(chatJid));
+    const pending = getMessagesSince(
+      chatJid,
+      sinceTimestamp,
+      getGroupBotName(chatJid),
+    );
     if (pending.length > 0) {
       logger.info(
         { group: group.name, pendingCount: pending.length },
