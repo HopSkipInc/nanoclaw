@@ -148,12 +148,15 @@ export function resolveRepo(repoName: string): RepoEntry | null {
 
 // --- Slug generation ---
 
-function slugify(text: string): string {
-  return text
+function slugify(text: string, maxWords = 5): string {
+  const slug = text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 50);
+    .replace(/^-|-$/g, '');
+
+  // Limit to maxWords hyphen-separated segments to avoid prompt-derived names
+  const words = slug.split('-').filter(Boolean).slice(0, maxWords);
+  return words.join('-').slice(0, 50);
 }
 
 // --- Worktree lifecycle ---
@@ -166,7 +169,9 @@ export async function createWorktree(
   const repoPath = expandPath(repo.path);
   const id = randomUUID();
   const slug = slugify(description);
-  const branch = `nanoclaw/${owner}/${slug}`;
+  // Avoid double prefix (e.g. nanoclaw/nanoclaw/...) when owner IS nanoclaw
+  const branch =
+    owner === 'nanoclaw' ? `nanoclaw/${slug}` : `nanoclaw/${owner}/${slug}`;
 
   if (PROTECTED_BRANCHES.has(branch)) {
     throw new Error(
@@ -294,12 +299,17 @@ export async function finalizeCodingTask(
     throw new Error('No commits to push — agent made no changes');
   }
 
-  // Push branch (no --force)
-  execSync(`git push origin ${JSON.stringify(info.branch)}`, {
-    cwd: info.worktreePath,
-    stdio: 'pipe',
-    timeout: 60000,
-  });
+  // Push branch — use --force-with-lease to handle retries where the remote
+  // branch already exists from a previous run (safe: only overwrites if no
+  // one else pushed new commits since our last fetch)
+  execSync(
+    `git push --force-with-lease origin ${JSON.stringify(info.branch)}`,
+    {
+      cwd: info.worktreePath,
+      stdio: 'pipe',
+      timeout: 60000,
+    },
+  );
 
   logger.info({ branch: info.branch }, 'Branch pushed');
 
