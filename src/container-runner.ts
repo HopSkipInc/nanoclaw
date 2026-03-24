@@ -315,6 +315,9 @@ function buildContainerArgs(
         : '/app/fleet-entrypoint.sh';
     args.push('--entrypoint', entrypoint);
     args.push('-e', 'NANOCLAW_FLEET_TASK=1');
+    // tmux requires TERM to be set — without it the tmux server fails to start
+    // and bootstrap.sh exits immediately with no agents running
+    args.push('-e', 'TERM=xterm');
   }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
