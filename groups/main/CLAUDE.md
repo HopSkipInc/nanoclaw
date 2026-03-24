@@ -148,7 +148,7 @@ Groups are registered in the SQLite `registered_groups` table:
   "1234567890-1234567890@g.us": {
     "name": "Family Chat",
     "folder": "whatsapp_family-chat",
-    "trigger": "@Andy",
+    "trigger": "@NanoClaw",
     "added_at": "2024-01-31T12:00:00.000Z"
   }
 }
@@ -193,7 +193,7 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
   "1234567890@g.us": {
     "name": "Dev Team",
     "folder": "dev-team",
-    "trigger": "@Andy",
+    "trigger": "@NanoClaw",
     "added_at": "2026-01-31T12:00:00Z",
     "containerConfig": {
       "additionalMounts": [
@@ -251,6 +251,22 @@ Notes:
 ### Listing Groups
 
 Read `/workspace/project/data/registered_groups.json` and format it nicely.
+
+---
+
+## Product Codebase Access
+
+You have read-only access to core HopSkip product repos. Use these to answer questions about how the product works, trace feature implementations, or investigate behavior.
+
+| Container Path | Repo | What's in it |
+|----------------|------|--------------|
+| `/workspace/extra/browser-app-v2` | browser-app-v2 | React frontend (planner-facing web app) |
+| `/workspace/extra/MVP` | MVP | .NET API backend (core business logic, controllers, services) |
+| `/workspace/extra/SourcingService` | SourcingService | .NET sourcing service (hotel search, proposals) |
+| `/workspace/extra/SellingService` | SellingService | .NET selling service (venues, pricing) |
+| `/workspace/extra/NotificationService` | NotificationService | .NET notification service (email, push, Service Bus) |
+
+When asked "how does X work", explore the relevant repo(s) — read CLAUDE.md first for context, then grep/read source files. Cite file paths in your answers so Greg can follow up.
 
 ---
 

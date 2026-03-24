@@ -153,6 +153,27 @@ function saveState(): void {
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
 }
 
+/** Get the trigger pattern for a specific group, falling back to global. */
+function getGroupTriggerPattern(chatJid: string): RegExp {
+  const group = registeredGroups[chatJid];
+  if (group?.trigger) {
+    return new RegExp(group.trigger, 'i');
+  }
+  return TRIGGER_PATTERN;
+}
+
+/** Get the bot display name for a group based on its channel instance. */
+function getGroupBotName(chatJid: string): string {
+  const group = registeredGroups[chatJid];
+  if (group?.channel_id) {
+    const channel = channels.find((c) => c.name === group.channel_id);
+    if (channel && 'botDisplayName' in channel) {
+      return (channel as { botDisplayName: string }).botDisplayName;
+    }
+  }
+  return ASSISTANT_NAME;
+}
+
 function registerGroup(jid: string, group: RegisteredGroup): void {
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
@@ -200,19 +221,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
   if (!group) return true;
 
-  const channel = findChannel(channels, chatJid);
+  const channel = findChannel(channels, chatJid, group.channel_id);
   if (!channel) {
     console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
     return true;
   }
 
   const isMainGroup = group.isMain === true;
+  const triggerPattern = getGroupTriggerPattern(chatJid);
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
     chatJid,
     sinceTimestamp,
-    ASSISTANT_NAME,
+    getGroupBotName(chatJid),
   );
 
   if (missedMessages.length === 0) return true;
@@ -287,7 +309,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
-        TRIGGER_PATTERN.test(m.content.trim()) &&
+        triggerPattern.test(m.content.trim()) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
@@ -295,10 +317,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Check if the latest trigger message is a coding task or fleet task
   const triggerMessage = missedMessages.find((m) =>
-    TRIGGER_PATTERN.test(m.content.trim()),
+    triggerPattern.test(m.content.trim()),
   );
   if (triggerMessage) {
-    const codingTask = parseCodingTask(triggerMessage.content);
+    const codingTask = parseCodingTask(triggerMessage.content, triggerPattern);
     if (codingTask) {
       // Advance cursor before async coding task
       lastAgentTimestamp[chatJid] =
@@ -330,7 +352,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       return true;
     }
 
-    const estimateTask = parseEstimateTask(triggerMessage.content);
+    const estimateTask = parseEstimateTask(triggerMessage.content, triggerPattern);
     if (estimateTask) {
       lastAgentTimestamp[chatJid] =
         missedMessages[missedMessages.length - 1].timestamp;
@@ -351,7 +373,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Only for trigger messages — don't classify random conversation
   if (triggerMessage) {
     const stripped = triggerMessage.content
-      .replace(TRIGGER_PATTERN, '')
+      .replace(triggerPattern, '')
       .replace(/<@[A-Z0-9]+>/g, '')
       .trim();
     const classification = await classifyIntent(stripped);
@@ -608,10 +630,11 @@ const ESTIMATE_TASK_PATTERN = /^estimate\s+(\S+)\s+(.+)$/i;
  */
 function parseCodingTask(
   content: string,
+  trigger: RegExp = TRIGGER_PATTERN,
 ): { repoName: string; description: string } | null {
   // Strip the trigger prefix (e.g., "@NanoClaw ") and any Slack user mentions
   const stripped = content
-    .replace(TRIGGER_PATTERN, '')
+    .replace(trigger, '')
     .replace(/<@[A-Z0-9]+>/g, '')
     .trim();
   const match = stripped.match(CODING_TASK_PATTERN);
@@ -629,9 +652,10 @@ function parseCodingTask(
  */
 function parseEstimateTask(
   content: string,
+  trigger: RegExp = TRIGGER_PATTERN,
 ): { repoName: string; description: string } | null {
   const stripped = content
-    .replace(TRIGGER_PATTERN, '')
+    .replace(trigger, '')
     .replace(/<@[A-Z0-9]+>/g, '')
     .trim();
   const match = stripped.match(ESTIMATE_TASK_PATTERN);
@@ -1251,7 +1275,7 @@ async function processEstimateTask(
   }
 
   await reply(
-    `_Estimate session ended. To launch a fleet:_ \`@${ASSISTANT_NAME} fleet ${repoName} ${description}\``,
+    `_Estimate session ended. To launch a fleet:_ \`@${getGroupBotName(chatJid)} fleet ${repoName} ${description}\``,
   );
 }
 
@@ -1295,7 +1319,7 @@ async function startMessageLoop(): Promise<void> {
           const group = registeredGroups[chatJid];
           if (!group) continue;
 
-          const channel = findChannel(channels, chatJid);
+          const channel = findChannel(channels, chatJid, group.channel_id);
           if (!channel) {
             console.log(
               `Warning: no channel owns JID ${chatJid}, skipping messages`,
@@ -1305,6 +1329,7 @@ async function startMessageLoop(): Promise<void> {
 
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          const loopTriggerPattern = getGroupTriggerPattern(chatJid);
 
           // Check for pending confirmation approval (before trigger check)
           const loopPending = pendingConfirmations[chatJid];
@@ -1375,7 +1400,7 @@ async function startMessageLoop(): Promise<void> {
             const allowlistCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some(
               (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
+                loopTriggerPattern.test(m.content.trim()) &&
                 (m.is_from_me ||
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
@@ -1384,10 +1409,10 @@ async function startMessageLoop(): Promise<void> {
 
           // Check if the latest trigger message is a coding task or fleet task
           const codingTrigger = groupMessages.find((m) =>
-            TRIGGER_PATTERN.test(m.content.trim()),
+            loopTriggerPattern.test(m.content.trim()),
           );
           if (codingTrigger) {
-            const codingTask = parseCodingTask(codingTrigger.content);
+            const codingTask = parseCodingTask(codingTrigger.content, loopTriggerPattern);
             if (codingTask) {
               lastAgentTimestamp[chatJid] =
                 groupMessages[groupMessages.length - 1].timestamp;
@@ -1419,7 +1444,7 @@ async function startMessageLoop(): Promise<void> {
               continue;
             }
 
-            const estimateTask = parseEstimateTask(codingTrigger.content);
+            const estimateTask = parseEstimateTask(codingTrigger.content, loopTriggerPattern);
             if (estimateTask) {
               lastAgentTimestamp[chatJid] =
                 groupMessages[groupMessages.length - 1].timestamp;
@@ -1437,7 +1462,7 @@ async function startMessageLoop(): Promise<void> {
 
             // NL classifier — Haiku call is fast (~200ms)
             const stripped = codingTrigger.content
-              .replace(TRIGGER_PATTERN, '')
+              .replace(loopTriggerPattern, '')
               .replace(/<@[A-Z0-9]+>/g, '')
               .trim();
             try {
@@ -1518,7 +1543,7 @@ async function startMessageLoop(): Promise<void> {
           const allPending = getMessagesSince(
             chatJid,
             lastAgentTimestamp[chatJid] || '',
-            ASSISTANT_NAME,
+            getGroupBotName(chatJid),
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
@@ -1554,7 +1579,7 @@ async function startMessageLoop(): Promise<void> {
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-    const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+    const pending = getMessagesSince(chatJid, sinceTimestamp, getGroupBotName(chatJid));
     if (pending.length > 0) {
       logger.info(
         { group: group.name, pendingCount: pending.length },
@@ -1595,12 +1620,13 @@ async function main(): Promise<void> {
   // Start fleet dispatcher if queue mode is enabled
   let dispatcher: { stop: () => void } | null = null;
   if (process.env.FLEET_USE_QUEUE === '1') {
-    // Register Slack reply handler so the dispatcher can send progress to Slack threads
+    // Register Slack reply handler so the dispatcher can send progress to Slack threads.
+    // Looks up the correct Slack channel instance via the group's channel_id.
     registerReplyHandler('slack', async (replyTo, text) => {
       if (replyTo.type !== 'slack') return;
-      const slackChannel = channels.find(
-        (ch) => ch.constructor.name === 'SlackChannel',
-      );
+      const grp = registeredGroups[replyTo.channelId];
+      const targetName = grp?.channel_id || 'slack';
+      const slackChannel = channels.find((ch) => ch.name === targetName);
       if (slackChannel && replyTo.threadTs && slackChannel.sendThreadReply) {
         await slackChannel.sendThreadReply(
           replyTo.channelId,
@@ -1655,7 +1681,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    const channel = findChannel(channels, chatJid);
+    const channel = findChannel(channels, chatJid, group?.channel_id);
     if (!channel) return;
 
     if (command === '/remote-control') {
@@ -1758,7 +1784,8 @@ async function main(): Promise<void> {
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
+      const grp = registeredGroups[jid];
+      const channel = findChannel(channels, jid, grp?.channel_id);
       if (!channel) {
         console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
         return;
@@ -1769,7 +1796,8 @@ async function main(): Promise<void> {
   });
   startIpcWatcher({
     sendMessage: (jid, text) => {
-      const channel = findChannel(channels, jid);
+      const grp = registeredGroups[jid];
+      const channel = findChannel(channels, jid, grp?.channel_id);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
     },
@@ -1791,7 +1819,7 @@ async function main(): Promise<void> {
         logger.warn({ chatJid }, 'launch_fleet: group not registered');
         return;
       }
-      const channel = findChannel(channels, chatJid);
+      const channel = findChannel(channels, chatJid, group.channel_id);
       if (!channel) {
         logger.warn({ chatJid }, 'launch_fleet: no channel for JID');
         return;

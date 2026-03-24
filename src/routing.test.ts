@@ -102,7 +102,7 @@ describe('getAvailableGroups', () => {
       'reg@g.us': {
         name: 'Registered',
         folder: 'registered',
-        trigger: '@Andy',
+        trigger: '@NanoClaw',
         added_at: '2024-01-01T00:00:00.000Z',
       },
     });
@@ -234,7 +234,7 @@ describe('getAvailableGroups', () => {
       'slack:C0123456789': {
         name: 'Slack Registered',
         folder: 'slack-registered',
-        trigger: '@Andy',
+        trigger: '@NanoClaw',
         added_at: '2024-01-01T00:00:00.000Z',
       },
     });

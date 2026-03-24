@@ -28,8 +28,23 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+/** Per-instance config for multi-app Slack support. */
+export interface SlackInstanceConfig {
+  botTokenKey: string; // e.g. 'SLACK_BOT_TOKEN' or 'FLEETBOT_SLACK_BOT_TOKEN'
+  appTokenKey: string; // e.g. 'SLACK_APP_TOKEN' or 'FLEETBOT_SLACK_APP_TOKEN'
+  instanceName: string; // e.g. 'slack' or 'slack:fleetbot'
+  botDisplayName: string; // e.g. 'NanoClaw' or 'FleetBot'
+}
+
+const DEFAULT_CONFIG: SlackInstanceConfig = {
+  botTokenKey: 'SLACK_BOT_TOKEN',
+  appTokenKey: 'SLACK_APP_TOKEN',
+  instanceName: 'slack',
+  botDisplayName: ASSISTANT_NAME,
+};
+
 export class SlackChannel implements Channel {
-  name = 'slack';
+  name: string;
 
   private app: App;
   private botUserId: string | undefined;
@@ -39,19 +54,22 @@ export class SlackChannel implements Channel {
   private userNameCache = new Map<string, string>();
 
   private opts: SlackChannelOpts;
+  private config: SlackInstanceConfig;
 
-  constructor(opts: SlackChannelOpts) {
+  constructor(opts: SlackChannelOpts, config?: SlackInstanceConfig) {
     this.opts = opts;
+    this.config = config || DEFAULT_CONFIG;
+    this.name = this.config.instanceName;
 
     // Read tokens from .env (not process.env — keeps secrets off the environment
     // so they don't leak to child processes, matching NanoClaw's security pattern)
-    const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
-    const botToken = env.SLACK_BOT_TOKEN;
-    const appToken = env.SLACK_APP_TOKEN;
+    const env = readEnvFile([this.config.botTokenKey, this.config.appTokenKey]);
+    const botToken = env[this.config.botTokenKey];
+    const appToken = env[this.config.appTokenKey];
 
     if (!botToken || !appToken) {
       throw new Error(
-        'SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set in .env',
+        `${this.config.botTokenKey} and ${this.config.appTokenKey} must be set in .env`,
       );
     }
 
@@ -63,6 +81,11 @@ export class SlackChannel implements Channel {
     });
 
     this.setupEventHandlers();
+  }
+
+  /** The display name for this bot instance. */
+  get botDisplayName(): string {
+    return this.config.botDisplayName;
   }
 
   private setupEventHandlers(): void {
@@ -95,11 +118,14 @@ export class SlackChannel implements Channel {
       const group = groups[jid];
       if (!group) return;
 
+      // Skip messages for groups owned by a different channel instance
+      if (group.channel_id && group.channel_id !== this.name) return;
+
       const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
-        senderName = ASSISTANT_NAME;
+        senderName = this.config.botDisplayName;
       } else {
         senderName =
           (msg.user ? await this.resolveUserName(msg.user) : undefined) ||
@@ -107,17 +133,20 @@ export class SlackChannel implements Channel {
           'unknown';
       }
 
-      // Translate Slack <@UBOTID> mentions into TRIGGER_PATTERN format.
-      // Slack encodes @mentions as <@U12345>, which won't match TRIGGER_PATTERN
-      // (e.g., ^@<ASSISTANT_NAME>\b), so we prepend the trigger when the bot is @mentioned.
+      // Translate Slack <@UBOTID> mentions into trigger format.
+      // Slack encodes @mentions as <@U12345>; we prepend @BotName so the
+      // per-group trigger pattern in index.ts can match it.
       let content = msg.text;
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (
-          content.includes(mentionPattern) &&
-          !TRIGGER_PATTERN.test(content)
-        ) {
-          content = `@${ASSISTANT_NAME} ${content}`;
+        if (content.includes(mentionPattern)) {
+          // Build the per-group trigger regex (or fall back to global)
+          const triggerRe = group.trigger
+            ? new RegExp(group.trigger, 'i')
+            : TRIGGER_PATTERN;
+          if (!triggerRe.test(content)) {
+            content = `@${this.config.botDisplayName} ${content}`;
+          }
         }
       }
 
@@ -136,8 +165,10 @@ export class SlackChannel implements Channel {
       if (!isBotMessage) {
         const isMain = group.isMain === true;
         const needsTrigger = !isMain && group.requiresTrigger !== false;
-        const willTrigger =
-          !needsTrigger || TRIGGER_PATTERN.test(content.trim());
+        const triggerRe = group.trigger
+          ? new RegExp(group.trigger, 'i')
+          : TRIGGER_PATTERN;
+        const willTrigger = !needsTrigger || triggerRe.test(content.trim());
 
         if (willTrigger) {
           this.addReaction(msg.channel, msg.ts, 'eyes');
@@ -155,7 +186,10 @@ export class SlackChannel implements Channel {
     try {
       const auth = await this.app.client.auth.test();
       this.botUserId = auth.user_id as string;
-      logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
+      logger.info(
+        { botUserId: this.botUserId, instance: this.name },
+        'Connected to Slack',
+      );
     } catch (err) {
       logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
@@ -352,4 +386,21 @@ registerChannel('slack', (opts: ChannelOpts) => {
   const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
   if (!env.SLACK_BOT_TOKEN || !env.SLACK_APP_TOKEN) return null;
   return new SlackChannel(opts);
+});
+
+// FleetBot — second Slack app instance.
+// Skipped automatically when FLEETBOT tokens are not configured.
+registerChannel('slack:fleetbot', (opts: ChannelOpts) => {
+  const env = readEnvFile([
+    'FLEETBOT_SLACK_BOT_TOKEN',
+    'FLEETBOT_SLACK_APP_TOKEN',
+  ]);
+  if (!env.FLEETBOT_SLACK_BOT_TOKEN || !env.FLEETBOT_SLACK_APP_TOKEN)
+    return null;
+  return new SlackChannel(opts, {
+    botTokenKey: 'FLEETBOT_SLACK_BOT_TOKEN',
+    appTokenKey: 'FLEETBOT_SLACK_APP_TOKEN',
+    instanceName: 'slack:fleetbot',
+    botDisplayName: 'FleetBot',
+  });
 });
