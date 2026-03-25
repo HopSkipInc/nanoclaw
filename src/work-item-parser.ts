@@ -33,8 +33,7 @@ export interface ParsedWorkItem {
 
 // https://github.com/HopSkipInc/ai-fleet/issues/55
 // https://github.com/HopSkipInc/ai-fleet/pull/56
-const GITHUB_URL_RE =
-  /github\.com\/([^/]+\/[^/]+)\/(issues|pull)\/(\d+)/i;
+const GITHUB_URL_RE = /github\.com\/([^/]+\/[^/]+)\/(issues|pull)\/(\d+)/i;
 
 // https://dev.azure.com/saratogasandboxes/Doorbell/_workitems/edit/7300
 const ADO_NEW_URL_RE =
@@ -47,8 +46,7 @@ const ADO_OLD_URL_RE =
 // --- Shorthand patterns ---
 
 // "HopSkipInc/ai-fleet #55" or "HopSkipInc/ai-fleet #55 some description"
-const GITHUB_SHORTHAND_RE =
-  /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s+#(\d+)/;
+const GITHUB_SHORTHAND_RE = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s+#(\d+)/;
 
 // "ado:Doorbell/SomeService US-7300" or "ado:Doorbell US-7300"
 const ADO_SHORTHAND_RE =
@@ -134,7 +132,10 @@ export function parseWorkItem(input: string): ParsedWorkItem | null {
  * Extract remaining description text after removing the work item reference.
  * Returns empty string if the entire input was the reference.
  */
-export function extractDescription(input: string, parsed: ParsedWorkItem): string {
+export function extractDescription(
+  input: string,
+  parsed: ParsedWorkItem,
+): string {
   const unwrapped = input.replace(SLACK_URL_RE, '$1');
 
   // Remove the full URL (including protocol) or shorthand
@@ -143,8 +144,14 @@ export function extractDescription(input: string, parsed: ParsedWorkItem): strin
   // Remove full URLs (protocol + domain + path)
   remaining = remaining
     .replace(/https?:\/\/github\.com\/[^/]+\/[^/]+\/(issues|pull)\/\d+/gi, '')
-    .replace(/https?:\/\/dev\.azure\.com\/[^/]+\/[^/]+\/_workitems\/edit\/\d+/gi, '')
-    .replace(/https?:\/\/[^/]+\.visualstudio\.com\/[^/]+\/_workitems\/edit\/\d+/gi, '');
+    .replace(
+      /https?:\/\/dev\.azure\.com\/[^/]+\/[^/]+\/_workitems\/edit\/\d+/gi,
+      '',
+    )
+    .replace(
+      /https?:\/\/[^/]+\.visualstudio\.com\/[^/]+\/_workitems\/edit\/\d+/gi,
+      '',
+    );
 
   // Remove shorthand patterns
   if (parsed.source === 'ado') {

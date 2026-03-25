@@ -3,7 +3,9 @@ import { parseWorkItem, extractDescription } from './work-item-parser.js';
 
 describe('parseWorkItem', () => {
   it('parses GitHub issue URL', () => {
-    const result = parseWorkItem('https://github.com/HopSkipInc/ai-fleet/issues/55');
+    const result = parseWorkItem(
+      'https://github.com/HopSkipInc/ai-fleet/issues/55',
+    );
     expect(result).toEqual({
       source: 'github',
       repoSlug: 'HopSkipInc/ai-fleet',
@@ -13,7 +15,9 @@ describe('parseWorkItem', () => {
   });
 
   it('parses GitHub PR URL', () => {
-    const result = parseWorkItem('https://github.com/HopSkipInc/ai-fleet/pull/56');
+    const result = parseWorkItem(
+      'https://github.com/HopSkipInc/ai-fleet/pull/56',
+    );
     expect(result).toEqual({
       source: 'github',
       repoSlug: 'HopSkipInc/ai-fleet',
@@ -23,7 +27,9 @@ describe('parseWorkItem', () => {
   });
 
   it('parses ADO new URL (dev.azure.com)', () => {
-    const result = parseWorkItem('https://dev.azure.com/saratogasandboxes/Doorbell/_workitems/edit/7300');
+    const result = parseWorkItem(
+      'https://dev.azure.com/saratogasandboxes/Doorbell/_workitems/edit/7300',
+    );
     expect(result).toEqual({
       source: 'ado',
       repoSlug: 'Doorbell',
@@ -34,7 +40,9 @@ describe('parseWorkItem', () => {
   });
 
   it('parses ADO old URL (visualstudio.com)', () => {
-    const result = parseWorkItem('https://saratogasandboxes.visualstudio.com/Doorbell/_workitems/edit/7300');
+    const result = parseWorkItem(
+      'https://saratogasandboxes.visualstudio.com/Doorbell/_workitems/edit/7300',
+    );
     expect(result).toEqual({
       source: 'ado',
       repoSlug: 'Doorbell',
@@ -45,7 +53,9 @@ describe('parseWorkItem', () => {
   });
 
   it('parses Slack-wrapped URL', () => {
-    const result = parseWorkItem('<https://github.com/HopSkipInc/ai-fleet/issues/55|github.com/HopSkipInc/ai-fleet/issues/55>');
+    const result = parseWorkItem(
+      '<https://github.com/HopSkipInc/ai-fleet/issues/55|github.com/HopSkipInc/ai-fleet/issues/55>',
+    );
     expect(result).toEqual({
       source: 'github',
       repoSlug: 'HopSkipInc/ai-fleet',
@@ -55,7 +65,9 @@ describe('parseWorkItem', () => {
   });
 
   it('parses Slack-wrapped URL without display text', () => {
-    const result = parseWorkItem('<https://github.com/HopSkipInc/ai-fleet/issues/55>');
+    const result = parseWorkItem(
+      '<https://github.com/HopSkipInc/ai-fleet/issues/55>',
+    );
     expect(result).toEqual({
       source: 'github',
       repoSlug: 'HopSkipInc/ai-fleet',
@@ -110,7 +122,9 @@ describe('parseWorkItem', () => {
   });
 
   it('handles URL with surrounding text', () => {
-    const result = parseWorkItem('check out https://github.com/HopSkipInc/ai-fleet/issues/55 please');
+    const result = parseWorkItem(
+      'check out https://github.com/HopSkipInc/ai-fleet/issues/55 please',
+    );
     expect(result?.number).toBe(55);
     expect(result?.repoSlug).toBe('HopSkipInc/ai-fleet');
   });
@@ -118,20 +132,35 @@ describe('parseWorkItem', () => {
 
 describe('extractDescription', () => {
   it('extracts remaining text after URL', () => {
-    const parsed = parseWorkItem('https://github.com/HopSkipInc/ai-fleet/issues/55 fix the verification checklist')!;
-    const desc = extractDescription('https://github.com/HopSkipInc/ai-fleet/issues/55 fix the verification checklist', parsed);
+    const parsed = parseWorkItem(
+      'https://github.com/HopSkipInc/ai-fleet/issues/55 fix the verification checklist',
+    )!;
+    const desc = extractDescription(
+      'https://github.com/HopSkipInc/ai-fleet/issues/55 fix the verification checklist',
+      parsed,
+    );
     expect(desc).toBe('fix the verification checklist');
   });
 
   it('returns empty for URL-only input', () => {
-    const parsed = parseWorkItem('https://github.com/HopSkipInc/ai-fleet/issues/55')!;
-    const desc = extractDescription('https://github.com/HopSkipInc/ai-fleet/issues/55', parsed);
+    const parsed = parseWorkItem(
+      'https://github.com/HopSkipInc/ai-fleet/issues/55',
+    )!;
+    const desc = extractDescription(
+      'https://github.com/HopSkipInc/ai-fleet/issues/55',
+      parsed,
+    );
     expect(desc).toBe('');
   });
 
   it('extracts description after shorthand', () => {
-    const parsed = parseWorkItem('HopSkipInc/ai-fleet #55 add the checklist section')!;
-    const desc = extractDescription('HopSkipInc/ai-fleet #55 add the checklist section', parsed);
+    const parsed = parseWorkItem(
+      'HopSkipInc/ai-fleet #55 add the checklist section',
+    )!;
+    const desc = extractDescription(
+      'HopSkipInc/ai-fleet #55 add the checklist section',
+      parsed,
+    );
     expect(desc).toBe('add the checklist section');
   });
 });

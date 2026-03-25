@@ -36,10 +36,7 @@ const MEDIUM_CONFIDENCE = 0.3;
 export async function classifyIntent(
   message: string,
 ): Promise<ClassifiedIntent | null> {
-  const secrets = readEnvFile([
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_BASE_URL',
-  ]);
+  const secrets = readEnvFile(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']);
   const apiKey = secrets.ANTHROPIC_API_KEY;
   if (!apiKey) {
     logger.warn('No ANTHROPIC_API_KEY — skipping intent classification');
@@ -90,7 +87,10 @@ Respond with ONLY valid JSON, no markdown fences:
   try {
     const raw = await callAnthropicAPI(baseUrl, apiKey, body);
     // Strip markdown fences — Haiku often wraps JSON in ```json ... ``` despite instructions
-    const result = raw.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+    const result = raw
+      .replace(/^```(?:json)?\s*\n?/i, '')
+      .replace(/\n?```\s*$/i, '')
+      .trim();
     const parsed = JSON.parse(result) as ClassifiedIntent;
 
     // Validate
@@ -174,16 +174,19 @@ function callAnthropicAPI(
       });
       res.on('end', () => {
         if (res.statusCode !== 200) {
-          reject(new Error(`API returned ${res.statusCode}: ${data.slice(0, 200)}`));
+          reject(
+            new Error(`API returned ${res.statusCode}: ${data.slice(0, 200)}`),
+          );
           return;
         }
         try {
           const response = JSON.parse(data);
-          const text =
-            response.content?.[0]?.text || '';
+          const text = response.content?.[0]?.text || '';
           resolve(text);
         } catch (err) {
-          reject(new Error(`Failed to parse API response: ${data.slice(0, 200)}`));
+          reject(
+            new Error(`Failed to parse API response: ${data.slice(0, 200)}`),
+          );
         }
       });
     });

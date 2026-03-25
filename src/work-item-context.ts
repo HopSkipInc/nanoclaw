@@ -53,7 +53,9 @@ export async function fetchGitHubContext(
   });
 
   if (!res.ok) {
-    throw new Error(`GitHub API error: ${res.status} for ${repoSlug}#${number}`);
+    throw new Error(
+      `GitHub API error: ${res.status} for ${repoSlug}#${number}`,
+    );
   }
 
   const data = (await res.json()) as {
@@ -82,9 +84,10 @@ export async function fetchGitHubContext(
       comments = commentsData
         .reverse() // chronological order
         .map((c) => {
-          const body = c.body.length > MAX_COMMENT_CHARS
-            ? c.body.slice(0, MAX_COMMENT_CHARS) + '...'
-            : c.body;
+          const body =
+            c.body.length > MAX_COMMENT_CHARS
+              ? c.body.slice(0, MAX_COMMENT_CHARS) + '...'
+              : c.body;
           return `${c.user.login} (${c.created_at.split('T')[0]}): ${body}`;
         });
     }
@@ -125,7 +128,9 @@ export async function fetchAdoContext(
   });
 
   if (!res.ok) {
-    throw new Error(`ADO API error: ${res.status} for ${project}#${workItemId}`);
+    throw new Error(
+      `ADO API error: ${res.status} for ${project}#${workItemId}`,
+    );
   }
 
   const data = (await res.json()) as {
@@ -136,16 +141,24 @@ export async function fetchAdoContext(
   const fields = data.fields;
   const title = fields['System.Title'] || '';
   const description = fields['System.Description'] || '';
-  const acceptanceCriteria = fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '';
+  const acceptanceCriteria =
+    fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '';
   const reproSteps = fields['Microsoft.VSTS.TCM.ReproSteps'] || '';
-  const tags = (fields['System.Tags'] || '').split(';').map((t) => t.trim()).filter(Boolean);
+  const tags = (fields['System.Tags'] || '')
+    .split(';')
+    .map((t) => t.trim())
+    .filter(Boolean);
   const workItemType = fields['System.WorkItemType'] || '';
 
   // Build body from available fields
   const bodyParts: string[] = [];
   if (description) bodyParts.push(stripHtml(description));
-  if (acceptanceCriteria) bodyParts.push(`\n**Acceptance Criteria:**\n${stripHtml(acceptanceCriteria)}`);
-  if (reproSteps) bodyParts.push(`\n**Repro Steps:**\n${stripHtml(reproSteps)}`);
+  if (acceptanceCriteria)
+    bodyParts.push(
+      `\n**Acceptance Criteria:**\n${stripHtml(acceptanceCriteria)}`,
+    );
+  if (reproSteps)
+    bodyParts.push(`\n**Repro Steps:**\n${stripHtml(reproSteps)}`);
 
   // Fetch comments
   let comments: string[] = [];
@@ -164,9 +177,10 @@ export async function fetchAdoContext(
       };
       comments = (commentsData.comments || []).map((c) => {
         const text = stripHtml(c.text);
-        const body = text.length > MAX_COMMENT_CHARS
-          ? text.slice(0, MAX_COMMENT_CHARS) + '...'
-          : text;
+        const body =
+          text.length > MAX_COMMENT_CHARS
+            ? text.slice(0, MAX_COMMENT_CHARS) + '...'
+            : text;
         return `${c.createdBy.displayName} (${c.createdDate.split('T')[0]}): ${body}`;
       });
     }
@@ -182,7 +196,9 @@ export async function fetchAdoContext(
     labels: tags,
     comments,
     typeHint,
-    sourceUrl: data._links?.html?.href || `https://dev.azure.com/${org}/${project}/_workitems/edit/${workItemId}`,
+    sourceUrl:
+      data._links?.html?.href ||
+      `https://dev.azure.com/${org}/${project}/_workitems/edit/${workItemId}`,
   };
 }
 
@@ -226,7 +242,10 @@ export async function fetchWorkItemContext(
 /**
  * Format work item context into a goal string for the fleet.
  */
-export function formatGoal(context: WorkItemContext, userDescription?: string): string {
+export function formatGoal(
+  context: WorkItemContext,
+  userDescription?: string,
+): string {
   const parts: string[] = [];
 
   // User's additional description takes priority
@@ -296,16 +315,20 @@ function stripHtml(html: string): string {
 
 function inferTypeFromLabels(labels: string[]): WorkItemContext['typeHint'] {
   const lower = labels.map((l) => l.toLowerCase());
-  if (lower.some((l) => l.includes('bug') || l.includes('defect'))) return 'bug';
-  if (lower.some((l) => l.includes('feature') || l.includes('enhancement'))) return 'feature';
-  if (lower.some((l) => l.includes('task') || l.includes('chore'))) return 'task';
+  if (lower.some((l) => l.includes('bug') || l.includes('defect')))
+    return 'bug';
+  if (lower.some((l) => l.includes('feature') || l.includes('enhancement')))
+    return 'feature';
+  if (lower.some((l) => l.includes('task') || l.includes('chore')))
+    return 'task';
   return 'unknown';
 }
 
 function adoTypeToHint(workItemType: string): WorkItemContext['typeHint'] {
   const lower = workItemType.toLowerCase();
   if (lower.includes('bug')) return 'bug';
-  if (lower.includes('user story') || lower.includes('feature')) return 'feature';
+  if (lower.includes('user story') || lower.includes('feature'))
+    return 'feature';
   if (lower.includes('task')) return 'task';
   return 'unknown';
 }

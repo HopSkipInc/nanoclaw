@@ -149,9 +149,7 @@ function createSchema(database: Database.Database): void {
 
   // Add channel_id column for multi-bot routing (migration for existing DBs)
   try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN channel_id TEXT`,
-    );
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN channel_id TEXT`);
   } catch {
     /* column already exists */
   }

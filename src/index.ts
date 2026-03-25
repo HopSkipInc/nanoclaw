@@ -552,7 +552,12 @@ async function runAgent(
   repoMount?: RepoMount,
 ): Promise<'success' | 'error'> {
   // Guard: Container App host has no Docker — can only handle fleet/code/estimate via ACI queue
-  if (process.env.CONTAINER_APP_NAME && !codingTask && !fleetTask && !repoMount) {
+  if (
+    process.env.CONTAINER_APP_NAME &&
+    !codingTask &&
+    !fleetTask &&
+    !repoMount
+  ) {
     const channel = findChannel(channels, chatJid, group.channel_id);
     if (channel) {
       await channel.sendMessage(
