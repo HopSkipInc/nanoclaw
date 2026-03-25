@@ -11,6 +11,7 @@ import path from 'path';
 import { logger } from './logger.js';
 
 const POLL_INTERVAL_MS = 10_000; // 10 seconds
+const STATUS_HEARTBEAT_MS = 300_000; // 5 minutes — periodic status even if nothing changed
 
 export interface FleetStatus {
   status: string;
@@ -54,6 +55,7 @@ export function startFleetProgressRelay(
   let progressOffset = 0; // byte offset into progress.jsonl
   let lastStatus = '';
   let lastAgentSummary = '';
+  let lastHeartbeatTime = Date.now();
   let resolvePromise: () => void;
 
   const donePromise = new Promise<void>((resolve) => {
@@ -112,6 +114,14 @@ export function startFleetProgressRelay(
         if (agentSummary && agentSummary !== lastAgentSummary) {
           lastAgentSummary = agentSummary;
           await send(agentSummary);
+          lastHeartbeatTime = Date.now();
+        }
+
+        // Periodic heartbeat with elapsed time + cost (even if agent counts unchanged)
+        const now = Date.now();
+        if (now - lastHeartbeatTime >= STATUS_HEARTBEAT_MS && data.summary) {
+          await send(`Fleet status: ${data.summary}`);
+          lastHeartbeatTime = now;
         }
 
         // Detect terminal status
