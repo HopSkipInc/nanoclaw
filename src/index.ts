@@ -63,6 +63,7 @@ import {
   routingDecision,
   ClassifiedIntent,
 } from './intent-classifier.js';
+import { handleProspectBotMessage } from './prospectbot-handler.js';
 import {
   CodingTaskMount,
   ContainerInput,
@@ -243,6 +244,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   if (missedMessages.length === 0) return true;
+
+  // ProspectBot handler — direct API, no containers
+  if (group.folder === 'prospectbot') {
+    const latestMessage = missedMessages[missedMessages.length - 1];
+    const messageText = latestMessage.content.replace(triggerPattern, '').trim();
+    try {
+      const response = await handleProspectBotMessage(messageText, chatJid);
+      await channel.sendMessage(chatJid, response);
+    } catch (err) {
+      logger.error({ err, chatJid }, 'ProspectBot handler error');
+      await channel.sendMessage(chatJid, 'SDR Bot API is unavailable, try again later.');
+    }
+    lastAgentTimestamp[chatJid] = latestMessage.timestamp;
+    saveState();
+    return true;
+  }
 
   // Check for pending confirmation approval
   const pending = pendingConfirmations[chatJid];
@@ -1443,6 +1460,30 @@ async function startMessageLoop(): Promise<void> {
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
           const loopTriggerPattern = getGroupTriggerPattern(chatJid);
+
+          // ProspectBot handler — direct API, no containers
+          if (group.folder === 'prospectbot') {
+            const latestMessage = groupMessages[groupMessages.length - 1];
+            const messageText = latestMessage.content
+              .replace(loopTriggerPattern, '')
+              .trim();
+            try {
+              const response = await handleProspectBotMessage(
+                messageText,
+                chatJid,
+              );
+              await channel.sendMessage(chatJid, response);
+            } catch (err) {
+              logger.error({ err, chatJid }, 'ProspectBot handler error');
+              await channel.sendMessage(
+                chatJid,
+                'SDR Bot API is unavailable, try again later.',
+              );
+            }
+            lastAgentTimestamp[chatJid] = latestMessage.timestamp;
+            saveState();
+            continue;
+          }
 
           // Check for pending confirmation approval (before trigger check)
           const loopPending = pendingConfirmations[chatJid];
