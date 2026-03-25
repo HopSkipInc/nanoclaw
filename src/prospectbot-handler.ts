@@ -2,9 +2,11 @@
  * ProspectBot Intent Handler
  *
  * Routes messages from #sdr-bot-pilot to the SDR Bot API and relays
- * responses back to Slack. No containers, no LLM — keyword matching only.
+ * responses back to Slack. Uses Haiku for natural language intent
+ * classification, then calls the appropriate API endpoint.
  */
 import { logger } from './logger.js';
+import https from 'https';
 
 const SDR_API_BASE =
   'https://hs-sdr-app-dev.yellowpond-a7d782a6.eastus2.azurecontainerapps.io';
@@ -105,39 +107,157 @@ type Intent =
   | { type: 'edit'; slug: IcpSlug; instruction: string }
   | { type: 'help' };
 
-function classifyProspectBotIntent(text: string): Intent {
+/**
+ * Classify user intent via Haiku LLM call.
+ * Falls back to keyword matching if the API call fails.
+ */
+async function classifyProspectBotIntent(text: string): Promise<Intent> {
+  const slug = detectSlug(text);
+
+  try {
+    const classified = await classifyWithHaiku(text);
+    if (classified) {
+      // Haiku returns the intent type — combine with detected slug
+      const resolvedSlug = classified.slug || slug;
+
+      switch (classified.intent) {
+        case 'list':
+          return { type: 'list' };
+        case 'show':
+          if (resolvedSlug) return { type: 'show', slug: resolvedSlug };
+          return { type: 'list' }; // "show me the ICPs" without a slug → list
+        case 'estimate':
+          if (resolvedSlug) return { type: 'estimate', slug: resolvedSlug };
+          break;
+        case 'sample':
+          if (resolvedSlug)
+            return {
+              type: 'sample',
+              slug: resolvedSlug,
+              count: classified.count || parseCount(text),
+            };
+          break;
+        case 'edit':
+          if (resolvedSlug)
+            return {
+              type: 'edit',
+              slug: resolvedSlug,
+              instruction: classified.instruction || text,
+            };
+          break;
+        case 'help':
+          return { type: 'help' };
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'ProspectBot Haiku classification failed, using keyword fallback');
+  }
+
+  // Keyword fallback
+  return classifyByKeywords(text);
+}
+
+function classifyByKeywords(text: string): Intent {
   const lower = text.toLowerCase();
   const slug = detectSlug(text);
 
-  // "list" / "show all" / "icps"
-  if (/\b(list|show\s+all|icps)\b/.test(lower)) {
-    return { type: 'list' };
-  }
-
-  // "estimate" + slug
-  if (/\bestimate\b/.test(lower) && slug) {
-    return { type: 'estimate', slug };
-  }
-
-  // "sample" + slug
-  if (/\bsample\b/.test(lower) && slug) {
+  if (/\b(list|show\s+all|icps)\b/.test(lower)) return { type: 'list' };
+  if (/\bestimate\b/.test(lower) && slug) return { type: 'estimate', slug };
+  if (/\bsample\b/.test(lower) && slug)
     return { type: 'sample', slug, count: parseCount(text) };
-  }
-
-  // "edit" / "change" / "update" / "exclude" / "include" / "add" / "remove" + slug
-  if (
-    /\b(edit|change|update|exclude|include|add|remove)\b/.test(lower) &&
-    slug
-  ) {
+  if (/\b(edit|change|update|exclude|include|add|remove)\b/.test(lower) && slug)
     return { type: 'edit', slug, instruction: text };
-  }
-
-  // "show" / "query" / "config" + slug
-  if (/\b(show|query|config)\b/.test(lower) && slug) {
+  if (/\b(show|see|view|query|config|describe|what)\b/.test(lower) && slug)
     return { type: 'show', slug };
-  }
+  if (slug) return { type: 'show', slug };
 
   return { type: 'help' };
+}
+
+interface HaikuClassification {
+  intent: 'list' | 'show' | 'estimate' | 'sample' | 'edit' | 'help';
+  slug?: IcpSlug;
+  count?: number;
+  instruction?: string;
+}
+
+async function classifyWithHaiku(text: string): Promise<HaikuClassification | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  const prompt = `You are a classifier for an ICP (Ideal Customer Profile) management bot. The user sent this message:
+
+"${text}"
+
+Available ICPs: fiona, carrie, nancy
+
+Classify the intent as one of:
+- "list" — user wants to see all ICPs
+- "show" — user wants to see a specific ICP's config
+- "estimate" — user wants match count / credit balance for an ICP
+- "sample" — user wants to pull sample prospect results
+- "edit" — user wants to modify an ICP (any change, addition, removal, exclusion)
+- "help" — user is confused or asking what commands are available
+
+Respond with ONLY valid JSON, no markdown:
+{"intent": "<type>", "slug": "<icp-name-or-null>", "count": <number-or-null>, "instruction": "<edit-instruction-or-null>"}`;
+
+  const body = JSON.stringify({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 150,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 3000,
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: string) => (data += chunk));
+        res.on('end', () => {
+          try {
+            if (res.statusCode !== 200) {
+              logger.warn({ status: res.statusCode }, 'ProspectBot Haiku API error');
+              resolve(null);
+              return;
+            }
+            const response = JSON.parse(data);
+            const raw = response.content?.[0]?.text || '';
+            const cleaned = raw
+              .replace(/^```(?:json)?\s*\n?/i, '')
+              .replace(/\n?```\s*$/i, '')
+              .trim();
+            const parsed = JSON.parse(cleaned) as HaikuClassification;
+            // Validate slug
+            if (parsed.slug && !KNOWN_SLUGS.includes(parsed.slug as IcpSlug)) {
+              parsed.slug = undefined;
+            }
+            logger.info({ intent: parsed.intent, slug: parsed.slug }, 'ProspectBot Haiku classified');
+            resolve(parsed);
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.write(body);
+    req.end();
+  });
 }
 
 function buildHelpMessage(): string {
@@ -192,7 +312,7 @@ export async function handleProspectBotMessage(
     }
   }
 
-  const intent = classifyProspectBotIntent(text);
+  const intent = await classifyProspectBotIntent(text);
 
   switch (intent.type) {
     case 'list': {
