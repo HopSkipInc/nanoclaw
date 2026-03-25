@@ -21,7 +21,11 @@ import {
   deadLetterMessage,
   FleetWorkMessage,
 } from './fleet-queue.js';
-import { dispatchFleetToACI, cleanupAciFleet } from './fleet-dispatch-aci.js';
+import {
+  dispatchFleetToACI,
+  cleanupAciFleet,
+  getAciFleetState,
+} from './fleet-dispatch-aci.js';
 import { resolveFleetTarget } from './fleet-task.js';
 import { startFleetProgressRelay } from './fleet-progress.js';
 import { readFleetStatus, readFleetPrUrl } from './fleet-task.js';
@@ -209,7 +213,18 @@ async function processAciFleet(message: FleetWorkMessage): Promise<void> {
     modelStrategy: fleet.modelStrategy,
   });
 
-  await reply(source, `Fleet dispatched to Azure: \`${aciResult.fleetId}\``);
+  await reply(
+    source,
+    `Fleet dispatched to Azure: \`${aciResult.fleetId}\`\nContainer starting — pulling image and initializing (this takes 2-3 min)...`,
+  );
+
+  // Poll ACI container state while waiting for fleet-status.json to appear.
+  // This bridges the gap between "dispatched" and first agent progress.
+  await pollAciStartup(
+    aciResult.containerGroupName,
+    (text) => reply(source, text),
+    180_000, // 3 min max
+  );
 
   // Start FleetTrack — poll Azure Files for status, relay to source
   const azureStatusDir = `/mnt/fleet-status/${aciResult.fleetId}`;
@@ -258,6 +273,56 @@ async function processAciFleet(message: FleetWorkMessage): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll ACI container state during cold start, relaying milestones to Slack.
+ * Stops once the container is Running or terminates, or after maxWaitMs.
+ */
+async function pollAciStartup(
+  containerGroupName: string,
+  send: (text: string) => Promise<void>,
+  maxWaitMs: number,
+): Promise<void> {
+  const start = Date.now();
+  let lastState = '';
+
+  while (Date.now() - start < maxWaitMs) {
+    await sleep(15_000);
+
+    const state = await getAciFleetState(containerGroupName);
+    if (!state) continue;
+
+    const key = `${state.state}:${state.detail}`;
+    if (key === lastState) continue;
+    lastState = key;
+
+    if (state.state === 'Running') {
+      await send(
+        'Container started — fleet agents launching, first progress update in ~1 min.',
+      );
+      return;
+    }
+
+    if (state.state === 'Terminated') {
+      if (state.exitCode !== 0) {
+        await send(
+          `Container exited with code ${state.exitCode}${state.detail ? `: ${state.detail}` : ''}`,
+        );
+      }
+      return;
+    }
+
+    if (state.state === 'Waiting' && state.detail) {
+      // Only relay non-trivial details (skip "Waiting to run")
+      if (
+        state.detail.includes('pulling') ||
+        state.detail.includes('Pulled')
+      ) {
+        await send(`Container: ${state.detail}`);
+      }
+    }
+  }
 }
 
 /**

@@ -418,6 +418,57 @@ export async function cleanupAciFleet(
 }
 
 /**
+ * Get the current state of an ACI fleet container.
+ * Returns a simplified status for progress reporting.
+ */
+export async function getAciFleetState(
+  containerGroupName: string,
+): Promise<{
+  state: string;
+  detail: string;
+  exitCode: number | null;
+} | null> {
+  try {
+    const armToken = await getArmToken();
+    const aciUrl = `https://management.azure.com/subscriptions/${ACI_SUBSCRIPTION_ID}/resourceGroups/${ACI_RESOURCE_GROUP}/providers/Microsoft.ContainerInstance/containerGroups/${containerGroupName}?api-version=2023-05-01`;
+
+    const res = await fetch(aciUrl, {
+      headers: { Authorization: `Bearer ${armToken}` },
+    });
+
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as {
+      properties?: {
+        containers?: Array<{
+          properties?: {
+            instanceView?: {
+              currentState?: {
+                state?: string;
+                detailStatus?: string;
+                exitCode?: number | null;
+              };
+            };
+          };
+        }>;
+      };
+    };
+
+    const container = data.properties?.containers?.[0];
+    const current = container?.properties?.instanceView?.currentState;
+    if (!current) return null;
+
+    return {
+      state: current.state || 'Unknown',
+      detail: current.detailStatus || '',
+      exitCode: current.exitCode ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Look up the default branch for a repo from the repo registry.
  * Returns undefined if not found.
  */
