@@ -248,13 +248,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // ProspectBot handler — direct API, no containers
   if (group.folder === 'prospectbot') {
     const latestMessage = missedMessages[missedMessages.length - 1];
-    const messageText = latestMessage.content.replace(triggerPattern, '').trim();
+    const messageText = latestMessage.content
+      .replace(triggerPattern, '')
+      .trim();
     try {
       const response = await handleProspectBotMessage(messageText, chatJid);
       await channel.sendMessage(chatJid, response);
     } catch (err) {
       logger.error({ err, chatJid }, 'ProspectBot handler error');
-      await channel.sendMessage(chatJid, 'SDR Bot API is unavailable, try again later.');
+      await channel.sendMessage(
+        chatJid,
+        'SDR Bot API is unavailable, try again later.',
+      );
     }
     lastAgentTimestamp[chatJid] = latestMessage.timestamp;
     saveState();

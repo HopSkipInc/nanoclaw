@@ -54,7 +54,7 @@ async function callApi(
 
   const headers: Record<string, string> = {
     'X-Api-Key': getApiKey(),
-    'Accept': 'application/json',
+    Accept: 'application/json',
   };
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -68,10 +68,7 @@ async function callApi(
     });
 
     const responseText = await response.text();
-    logger.info(
-      { status: response.status, path },
-      'ProspectBot API response',
-    );
+    logger.info({ status: response.status, path }, 'ProspectBot API response');
 
     if (!response.ok) {
       let detail = responseText;
@@ -181,11 +178,9 @@ export async function handleProspectBotMessage(
     if (elapsed < SAMPLE_CONFIRMATION_TIMEOUT_MS) {
       const lower = text.toLowerCase();
       if (/^(yes|yeah|yep|y|go|go ahead|do it|sure|ok)\b/.test(lower)) {
-        const result = await callApi(
-          'POST',
-          `/icp/${pending.slug}/sample`,
-          { count: pending.count },
-        );
+        const result = await callApi('POST', `/icp/${pending.slug}/sample`, {
+          count: pending.count,
+        });
         return result.text;
       }
       // Not a confirmation — fall through to normal intent parsing
@@ -231,11 +226,9 @@ export async function handleProspectBotMessage(
     }
 
     case 'edit': {
-      const result = await callApi(
-        'POST',
-        `/icp/${intent.slug}/edit`,
-        { instruction: intent.instruction },
-      );
+      const result = await callApi('POST', `/icp/${intent.slug}/edit`, {
+        instruction: intent.instruction,
+      });
       return result.text;
     }
 

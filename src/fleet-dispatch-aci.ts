@@ -421,9 +421,7 @@ export async function cleanupAciFleet(
  * Get the current state of an ACI fleet container.
  * Returns a simplified status for progress reporting.
  */
-export async function getAciFleetState(
-  containerGroupName: string,
-): Promise<{
+export async function getAciFleetState(containerGroupName: string): Promise<{
   state: string;
   detail: string;
   exitCode: number | null;
