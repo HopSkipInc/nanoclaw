@@ -232,9 +232,22 @@ async function processAciFleet(message: FleetWorkMessage): Promise<void> {
     reply(source, text),
   );
 
+  // Wait for fleet to complete, with a safety timeout.
+  // If the ACI container gets deleted or the relay never sees terminal status,
+  // we time out and move on instead of blocking the dispatcher forever.
+  const timeoutMinutes = message.fleet.timeoutMinutes || 120;
+  const safetyTimeoutMs = (timeoutMinutes + 10) * 60_000; // fleet timeout + 10 min buffer
+
   try {
-    // Wait for fleet to complete (progress relay resolves on terminal status)
-    await progressRelay.done;
+    await Promise.race([
+      progressRelay.done,
+      sleep(safetyTimeoutMs).then(() => {
+        logger.warn(
+          { fleetId: aciResult.fleetId, timeoutMinutes },
+          'Progress relay safety timeout — fleet may have been deleted or stuck',
+        );
+      }),
+    ]);
   } finally {
     progressRelay.stop();
   }
@@ -315,10 +328,7 @@ async function pollAciStartup(
 
     if (state.state === 'Waiting' && state.detail) {
       // Only relay non-trivial details (skip "Waiting to run")
-      if (
-        state.detail.includes('pulling') ||
-        state.detail.includes('Pulled')
-      ) {
+      if (state.detail.includes('pulling') || state.detail.includes('Pulled')) {
         await send(`Container: ${state.detail}`);
       }
     }
