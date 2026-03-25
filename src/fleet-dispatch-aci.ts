@@ -14,6 +14,7 @@
  *   Fleet container:  clone repo, run agents, push branch, create PR, write status
  */
 import crypto from 'crypto';
+import fs from 'fs';
 import { logger } from './logger.js';
 import { loadRepoRegistry } from './coding-task.js';
 
@@ -422,7 +423,15 @@ export async function cleanupAciFleet(
  */
 function lookupDefaultBranch(repoSlug: string): string | undefined {
   try {
-    const registry = loadRepoRegistry();
+    let registry = loadRepoRegistry();
+    if (!registry) {
+      // Fallback: read from Azure Files (Container App)
+      const azurePath = '/mnt/fleet-status/nanoclaw-store/repo-registry.json';
+      if (fs.existsSync(azurePath)) {
+        const data = JSON.parse(fs.readFileSync(azurePath, 'utf-8'));
+        registry = { repos: data.repos || data };
+      }
+    }
     if (!registry) return undefined;
     // repoSlug is "org/repo" — registry keys are just "repo"
     const repoName = repoSlug.includes('/')
