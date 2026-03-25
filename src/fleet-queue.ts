@@ -94,7 +94,9 @@ async function getQueueAuthHeader(): Promise<Record<string, string>> {
       resource: 'https://storage.azure.com/',
     });
     // Use the MI client ID (UUID), not the full resource path
-    const clientId = process.env.ACI_MI_CLIENT_ID || process.env.ACI_MANAGED_IDENTITY_CLIENT_ID;
+    const clientId =
+      process.env.ACI_MI_CLIENT_ID ||
+      process.env.ACI_MANAGED_IDENTITY_CLIENT_ID;
     if (clientId) params.set('client_id', clientId);
 
     const headers: Record<string, string> = { Metadata: 'true' };
@@ -196,7 +198,10 @@ export async function dequeueFleetWork(
   try {
     decoded = Buffer.from(messageTextMatch[1], 'base64').toString('utf-8');
   } catch {
-    logger.warn({ raw: messageTextMatch[1].slice(0, 100) }, 'Queue message is not valid base64 — skipping');
+    logger.warn(
+      { raw: messageTextMatch[1].slice(0, 100) },
+      'Queue message is not valid base64 — skipping',
+    );
     return null;
   }
 
@@ -204,7 +209,10 @@ export async function dequeueFleetWork(
   try {
     message = JSON.parse(decoded) as FleetWorkMessage;
   } catch {
-    logger.warn({ decoded: decoded.slice(0, 200) }, 'Queue message is not valid JSON — skipping');
+    logger.warn(
+      { decoded: decoded.slice(0, 200) },
+      'Queue message is not valid JSON — skipping',
+    );
     return null;
   }
 
@@ -273,6 +281,61 @@ export async function deadLetterMessage(
   } else {
     logger.info({ messageId: message.id, error }, 'Message dead-lettered');
   }
+}
+
+/**
+ * Clear all messages from the fleet work queue.
+ * Use during dogfooding / debugging to flush stale retries.
+ */
+export async function clearQueue(): Promise<void> {
+  const auth = await getQueueAuthHeader();
+  const url = `${queueUrl(QUEUE_NAME)}/messages`;
+
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: auth,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Queue clear failed: ${res.status} ${await res.text()}`);
+  }
+
+  logger.info('Fleet work queue cleared');
+}
+
+/**
+ * Peek at messages in the queue without dequeuing them.
+ * Returns up to `count` messages (max 32).
+ */
+export async function peekQueue(
+  count: number = 5,
+): Promise<FleetWorkMessage[]> {
+  const auth = await getQueueAuthHeader();
+  const url = `${queueUrl(QUEUE_NAME)}/messages?peekonly=true&numofmessages=${Math.min(count, 32)}`;
+
+  const res = await fetch(url, {
+    headers: { ...auth, Accept: 'application/xml' },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Queue peek failed: ${res.status}`);
+  }
+
+  const xml = await res.text();
+  const messages: FleetWorkMessage[] = [];
+  const regex = /<MessageText>([^<]+)<\/MessageText>/g;
+  let match;
+
+  while ((match = regex.exec(xml)) !== null) {
+    try {
+      const decoded = Buffer.from(match[1], 'base64').toString('utf-8');
+      messages.push(JSON.parse(decoded) as FleetWorkMessage);
+    } catch {
+      // skip malformed messages
+    }
+  }
+
+  return messages;
 }
 
 // --- Helpers ---

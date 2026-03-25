@@ -49,7 +49,12 @@ import {
   formatGoal,
   suggestAgents,
 } from './work-item-context.js';
-import { enqueueFleetWork, buildFleetWorkMessage } from './fleet-queue.js';
+import {
+  enqueueFleetWork,
+  buildFleetWorkMessage,
+  clearQueue,
+  peekQueue,
+} from './fleet-queue.js';
 import { startDispatcher, registerReplyHandler } from './fleet-dispatcher.js';
 import { startHealthServer, setHealthState, setNotReady } from './health.js';
 import {
@@ -320,6 +325,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     triggerPattern.test(m.content.trim()),
   );
   if (triggerMessage) {
+    // --- Admin commands (no container, instant reply) ---
+    const adminResult = await handleAdminCommand(
+      triggerMessage.content,
+      triggerPattern,
+      chatJid,
+      channel,
+    );
+    if (adminResult) {
+      lastAgentTimestamp[chatJid] =
+        missedMessages[missedMessages.length - 1].timestamp;
+      saveState();
+      return true;
+    }
+
     const codingTask = parseCodingTask(triggerMessage.content, triggerPattern);
     if (codingTask) {
       // Advance cursor before async coding task
@@ -532,6 +551,18 @@ async function runAgent(
   fleetTask?: ContainerInput['fleetTask'],
   repoMount?: RepoMount,
 ): Promise<'success' | 'error'> {
+  // Guard: Container App host has no Docker — can only handle fleet/code/estimate via ACI queue
+  if (process.env.CONTAINER_APP_NAME && !codingTask && !fleetTask && !repoMount) {
+    const channel = findChannel(channels, chatJid, group.channel_id);
+    if (channel) {
+      await channel.sendMessage(
+        chatJid,
+        "I'm running in cloud mode — I can handle `fleet`, `code`, and `estimate` commands but can't chat. Try: `@FleetBot fleet <repo> <description>` or `@FleetBot estimate <repo> <description>`",
+      );
+    }
+    return 'success';
+  }
+
   const isMain = group.isMain === true;
   // Coding/fleet tasks get a fresh session — no conversation history carryover
   // Repo mount sessions (estimates) DO persist for interactive follow-ups
@@ -666,6 +697,58 @@ function parseEstimateTask(
   const repo = resolveRepo(match[1]);
   if (!repo) return null;
   return { repoName: match[1], description: match[2] };
+}
+
+/**
+ * Handle admin commands (queue clear, queue peek, etc.).
+ * Returns true if the message was an admin command, false otherwise.
+ */
+async function handleAdminCommand(
+  content: string,
+  triggerPattern: RegExp,
+  chatJid: string,
+  channel: Channel,
+): Promise<boolean> {
+  const stripped = content
+    .replace(triggerPattern, '')
+    .replace(/<@[A-Z0-9]+>/g, '')
+    .trim()
+    .toLowerCase();
+
+  if (stripped === 'queue clear' || stripped === 'queue purge') {
+    try {
+      await clearQueue();
+      await channel.sendMessage(chatJid, 'Fleet work queue cleared.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await channel.sendMessage(chatJid, `Failed to clear queue: ${msg}`);
+    }
+    return true;
+  }
+
+  if (stripped === 'queue peek' || stripped === 'queue status') {
+    try {
+      const messages = await peekQueue();
+      if (messages.length === 0) {
+        await channel.sendMessage(chatJid, 'Fleet work queue is empty.');
+      } else {
+        const lines = messages.map(
+          (m, i) =>
+            `${i + 1}. *${m.task.repoSlug}* — ${m.task.description.slice(0, 80)}${m.task.description.length > 80 ? '...' : ''} (${m.createdAt})`,
+        );
+        await channel.sendMessage(
+          chatJid,
+          `*Queue* (${messages.length} message${messages.length > 1 ? 's' : ''}):\n${lines.join('\n')}`,
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await channel.sendMessage(chatJid, `Failed to peek queue: ${msg}`);
+    }
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -1055,7 +1138,10 @@ async function processFleetTask(
 
     // Read the fleet summary written by the super agent
     let fleetSummaryBody = '';
-    const summaryPath = path.join(worktreeInfo.worktreePath, '.fleet-summary.md');
+    const summaryPath = path.join(
+      worktreeInfo.worktreePath,
+      '.fleet-summary.md',
+    );
     try {
       if (fs.existsSync(summaryPath)) {
         fleetSummaryBody = fs.readFileSync(summaryPath, 'utf-8').trim();
@@ -1064,15 +1150,17 @@ async function processFleetTask(
       /* summary file not available */
     }
 
-    const prBody = fleetSummaryBody || buildFleetPrBody({
-      owner: NANOCLAW_OWNER,
-      channel: channelName,
-      branch: worktreeInfo.branch,
-      description: config.description,
-      fleetStatus: fleetStatus
-        ? `${fleetStatus.status}: ${fleetStatus.message}`
-        : fleetResult,
-    });
+    const prBody =
+      fleetSummaryBody ||
+      buildFleetPrBody({
+        owner: NANOCLAW_OWNER,
+        channel: channelName,
+        branch: worktreeInfo.branch,
+        description: config.description,
+        fleetStatus: fleetStatus
+          ? `${fleetStatus.status}: ${fleetStatus.message}`
+          : fleetResult,
+      });
 
     // Extract a PR title from the summary's first heading or first line
     let prTitle = config.description.slice(0, 65);
@@ -1083,11 +1171,7 @@ async function processFleetTask(
       }
     }
 
-    const prResult = await finalizeCodingTask(
-      worktreeInfo,
-      prTitle,
-      prBody,
-    );
+    const prResult = await finalizeCodingTask(worktreeInfo, prTitle, prBody);
 
     const parts: string[] = [];
     if (fleetResult) parts.push(fleetResult);
@@ -1436,6 +1520,20 @@ async function startMessageLoop(): Promise<void> {
             loopTriggerPattern.test(m.content.trim()),
           );
           if (codingTrigger) {
+            // --- Admin commands (no container, instant reply) ---
+            const adminResult = await handleAdminCommand(
+              codingTrigger.content,
+              loopTriggerPattern,
+              chatJid,
+              channel,
+            );
+            if (adminResult) {
+              lastAgentTimestamp[chatJid] =
+                groupMessages[groupMessages.length - 1].timestamp;
+              saveState();
+              continue;
+            }
+
             const codingTask = parseCodingTask(
               codingTrigger.content,
               loopTriggerPattern,

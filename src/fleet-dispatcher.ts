@@ -21,10 +21,7 @@ import {
   deadLetterMessage,
   FleetWorkMessage,
 } from './fleet-queue.js';
-import {
-  dispatchFleetToACI,
-  cleanupAciFleet,
-} from './fleet-dispatch-aci.js';
+import { dispatchFleetToACI, cleanupAciFleet } from './fleet-dispatch-aci.js';
 import { resolveFleetTarget } from './fleet-task.js';
 import { startFleetProgressRelay } from './fleet-progress.js';
 import { readFleetStatus, readFleetPrUrl } from './fleet-task.js';
@@ -32,9 +29,12 @@ import { readFleetStatus, readFleetPrUrl } from './fleet-task.js';
 // --- Config ---
 
 const POLL_INTERVAL_EMPTY_MS = 10_000; // 10s when queue is empty
-const POLL_INTERVAL_BUSY_MS = 1_000;   // 1s when processing
-const MAX_CONCURRENT_FLEETS = parseInt(process.env.MAX_CONCURRENT_FLEETS || '3', 10);
-const MAX_DEQUEUE_FAILURES = 3;        // dead-letter after this many failed dispatches
+const POLL_INTERVAL_BUSY_MS = 1_000; // 1s when processing
+const MAX_CONCURRENT_FLEETS = parseInt(
+  process.env.MAX_CONCURRENT_FLEETS || '3',
+  10,
+);
+const MAX_DEQUEUE_FAILURES = 3; // dead-letter after this many failed dispatches
 
 // --- State ---
 
@@ -50,7 +50,10 @@ export type ReplyHandler = (
   text: string,
 ) => Promise<void>;
 
-export function registerReplyHandler(sourceType: string, handler: ReplyHandler): void {
+export function registerReplyHandler(
+  sourceType: string,
+  handler: ReplyHandler,
+): void {
   replyHandlers.set(sourceType, handler);
 }
 
@@ -58,12 +61,18 @@ export function registerReplyHandler(sourceType: string, handler: ReplyHandler):
  * Send a reply to the trigger source.
  * Falls back to logging if no handler is registered.
  */
-async function reply(source: FleetWorkMessage['source'], text: string): Promise<void> {
+async function reply(
+  source: FleetWorkMessage['source'],
+  text: string,
+): Promise<void> {
   const handler = replyHandlers.get(source.replyTo.type);
   if (handler) {
     await handler(source.replyTo, text);
   } else {
-    logger.info({ sourceType: source.type, text }, 'No reply handler — logging instead');
+    logger.info(
+      { sourceType: source.type, text },
+      'No reply handler — logging instead',
+    );
   }
 }
 
@@ -72,7 +81,10 @@ async function reply(source: FleetWorkMessage['source'], text: string): Promise<
  */
 export function startDispatcher(): { stop: () => void } {
   running = true;
-  logger.info({ maxConcurrent: MAX_CONCURRENT_FLEETS }, 'Fleet dispatcher starting');
+  logger.info(
+    { maxConcurrent: MAX_CONCURRENT_FLEETS },
+    'Fleet dispatcher starting',
+  );
 
   const loop = async () => {
     while (running) {
@@ -94,8 +106,11 @@ export function startDispatcher(): { stop: () => void } {
 
         // Process in background (don't block the poll loop)
         activeFleets++;
-        processMessage(item.message, item.messageId, item.popReceipt)
-          .finally(() => { activeFleets--; });
+        processMessage(item.message, item.messageId, item.popReceipt).finally(
+          () => {
+            activeFleets--;
+          },
+        );
 
         await sleep(POLL_INTERVAL_BUSY_MS);
       } catch (err) {
@@ -130,7 +145,10 @@ async function processMessage(
     'Processing fleet work message',
   );
 
-  await reply(source, `Fleet queued for *${task.repoSlug}*: ${task.description.slice(0, 100)}${task.description.length > 100 ? '...' : ''}`);
+  await reply(
+    source,
+    `Fleet queued for *${task.repoSlug}*: ${task.description.slice(0, 100)}${task.description.length > 100 ? '...' : ''}`,
+  );
 
   try {
     // Resolve dispatch target
@@ -145,8 +163,14 @@ async function processMessage(
     } else {
       // Local Docker path — for now, log and skip
       // TODO: wire up local Docker dispatch when host runs locally
-      logger.warn({ messageId: message.id }, 'Local dispatch not yet supported in queue mode');
-      await reply(source, 'Local fleet dispatch is not yet supported in queue mode. Set target to azure or run from a local NanoClaw instance.');
+      logger.warn(
+        { messageId: message.id },
+        'Local dispatch not yet supported in queue mode',
+      );
+      await reply(
+        source,
+        'Local fleet dispatch is not yet supported in queue mode. Set target to azure or run from a local NanoClaw instance.',
+      );
     }
 
     // Success — delete the message
@@ -189,9 +213,8 @@ async function processAciFleet(message: FleetWorkMessage): Promise<void> {
 
   // Start FleetTrack — poll Azure Files for status, relay to source
   const azureStatusDir = `/mnt/fleet-status/${aciResult.fleetId}`;
-  const progressRelay = startFleetProgressRelay(
-    azureStatusDir,
-    (text) => reply(source, text),
+  const progressRelay = startFleetProgressRelay(azureStatusDir, (text) =>
+    reply(source, text),
   );
 
   try {
@@ -205,7 +228,10 @@ async function processAciFleet(message: FleetWorkMessage): Promise<void> {
   const finalStatus = readFleetStatus(azureStatusDir);
   const prUrl = readFleetPrUrl(azureStatusDir);
 
-  if (finalStatus && (finalStatus.status === 'success' || finalStatus.status === 'completed')) {
+  if (
+    finalStatus &&
+    (finalStatus.status === 'success' || finalStatus.status === 'completed')
+  ) {
     const parts: string[] = [];
     if (finalStatus.message) parts.push(finalStatus.message);
     if (prUrl) parts.push(`PR: ${prUrl}`);
@@ -221,7 +247,10 @@ async function processAciFleet(message: FleetWorkMessage): Promise<void> {
   try {
     await cleanupAciFleet(aciResult.containerGroupName);
   } catch (err) {
-    logger.warn({ err, containerGroupName: aciResult.containerGroupName }, 'ACI cleanup failed');
+    logger.warn(
+      { err, containerGroupName: aciResult.containerGroupName },
+      'ACI cleanup failed',
+    );
   }
 }
 
@@ -239,6 +268,9 @@ function isFatalError(message: string): boolean {
     message.includes('not found or not allowed') ||
     message.includes('No GITHUB_TOKEN') ||
     message.includes('No ADO_PAT') ||
-    message.includes('not yet supported')
+    message.includes('not yet supported') ||
+    message.includes('LinkedAuthorizationFailed') ||
+    message.includes('AuthorizationFailed') ||
+    message.includes('does not have permission')
   );
 }

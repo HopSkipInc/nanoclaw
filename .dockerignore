@@ -1,0 +1,6 @@
+node_modules/
+data/
+.nanoclaw/
+.git/
+.claude/
+*.db

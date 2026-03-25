@@ -15,6 +15,7 @@
  */
 import crypto from 'crypto';
 import { logger } from './logger.js';
+import { loadRepoRegistry } from './coding-task.js';
 
 // --- Types ---
 
@@ -55,7 +56,9 @@ const ACI_SUBSCRIPTION_ID = process.env.ACI_SUBSCRIPTION_ID || '';
 const ACI_MANAGED_IDENTITY_ID = process.env.ACI_MANAGED_IDENTITY_ID || '';
 // Client ID (UUID) for MI token requests — distinct from the full resource ID
 const ACI_MI_CLIENT_ID =
-  process.env.ACI_MI_CLIENT_ID || process.env.ACI_MANAGED_IDENTITY_CLIENT_ID || '';
+  process.env.ACI_MI_CLIENT_ID ||
+  process.env.ACI_MANAGED_IDENTITY_CLIENT_ID ||
+  '';
 const ACI_ACR_SERVER =
   process.env.ACI_ACR_SERVER || 'aifleetprodacr.azurecr.io';
 const ACI_FLEET_IMAGE =
@@ -294,7 +297,7 @@ export async function dispatchFleetToACI(
           name: 'fleet',
           properties: {
             image: ACI_FLEET_IMAGE,
-            command: ['/app/fleet-entrypoint.sh'],
+            command: ['/opt/ai-fleet/entrypoint.sh'],
             resources: {
               requests: {
                 cpu: ACI_CPU,
@@ -307,6 +310,24 @@ export async function dispatchFleetToACI(
               { name: repoTokenEnvName, secureValue: repoToken },
               { name: 'NANOCLAW_FLEET_TASK', value: '1' },
               { name: 'FLEET_ID', value: fleetId },
+              // Individual env vars for entrypoint.sh compatibility
+              { name: 'REPO_SLUG', value: config.repoSlug },
+              {
+                name: 'BRANCH',
+                value:
+                  config.branch ||
+                  lookupDefaultBranch(config.repoSlug) ||
+                  'main',
+              },
+              { name: 'FLEET_GOAL', value: config.description },
+              ...(config.issueNumber
+                ? [{ name: 'FLEET_ISSUE', value: config.issueNumber }]
+                : []),
+              { name: 'TERM', value: 'xterm' },
+              {
+                name: 'FLEET_STATUS_DIR',
+                value: `/workspace/fleet-status/${fleetId}`,
+              },
             ],
             volumeMounts: [
               {
@@ -392,5 +413,24 @@ export async function cleanupAciFleet(
     );
   } else {
     logger.info({ containerGroupName }, 'ACI container group deleted');
+  }
+}
+
+/**
+ * Look up the default branch for a repo from the repo registry.
+ * Returns undefined if not found.
+ */
+function lookupDefaultBranch(repoSlug: string): string | undefined {
+  try {
+    const registry = loadRepoRegistry();
+    if (!registry) return undefined;
+    // repoSlug is "org/repo" — registry keys are just "repo"
+    const repoName = repoSlug.includes('/')
+      ? repoSlug.split('/').pop()!
+      : repoSlug;
+    const entry = registry.repos[repoName];
+    return entry?.defaultBranch;
+  } catch {
+    return undefined;
   }
 }
