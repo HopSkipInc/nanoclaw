@@ -4,8 +4,9 @@
  * Routes batch approval commands to the SDR Bot API.
  * Handles: status, approve, skip (by name or number), pause for daily prospect batches.
  *
- * Batch ID resolution uses Option A: GET /batch/pending returns the current
- * pending batch (one active batch per AE at a time).
+ * Batch ID resolution: prefers GET /batch/by-thread?slack_ts={ts} for exact
+ * thread-to-batch matching. Falls back to GET /batch/pending when no thread
+ * context is available.
  */
 import { logger } from './logger.js';
 
@@ -74,7 +75,12 @@ async function callBatchApi(
     }
 
     const parsed = JSON.parse(responseText);
-    return { ok: true, status: response.status, text: parsed.text, raw: parsed };
+    return {
+      ok: true,
+      status: response.status,
+      text: parsed.text,
+      raw: parsed,
+    };
   } catch (err) {
     logger.error({ err, path }, 'SDR batch API call failed');
     return {
@@ -96,18 +102,34 @@ function extractBatchId(raw: Record<string, unknown>): string | null {
 }
 
 /**
- * Resolve the current pending batch ID by calling GET /batch/pending.
- * Returns the batch ID string, or null with an error message.
+ * Resolve batch ID from the Slack thread via GET /batch/by-thread?slack_ts={ts}.
+ * Falls back to GET /batch/pending when no threadKey is available.
  */
-async function resolvePendingBatchId(): Promise<
-  { batchId: string; error: null } | { batchId: null; error: string }
-> {
+async function resolveBatchId(
+  threadKey?: string,
+): Promise<{ batchId: string; error: null } | { batchId: null; error: string }> {
+  // Prefer thread-based lookup for exact batch resolution
+  if (threadKey) {
+    const result = await callBatchApi(
+      'GET',
+      `/batch/by-thread?slack_ts=${encodeURIComponent(threadKey)}`,
+    );
+    if (result.ok) {
+      const batchId = extractBatchId(result.raw);
+      if (batchId) return { batchId, error: null };
+    }
+    // 404 = no batch for this thread — fall through to pending
+    if (result.status !== 404) {
+      return { batchId: null, error: result.text };
+    }
+  }
+
+  // Fallback: most recent pending batch
   const result = await callBatchApi('GET', '/batch/pending');
   if (!result.ok) return { batchId: null, error: result.text };
 
   const batchId = extractBatchId(result.raw);
   if (!batchId) {
-    // No batch_id in response — either no pending batch or unexpected format
     return { batchId: null, error: result.text };
   }
 
@@ -117,12 +139,13 @@ async function resolvePendingBatchId(): Promise<
 /**
  * Resolve batch ID then call an action endpoint. Returns the API response text.
  */
-async function withPendingBatch(
+async function withBatch(
   method: 'GET' | 'POST',
   pathFn: (batchId: string) => string,
+  threadKey?: string,
   body?: unknown,
 ): Promise<string> {
-  const resolved = await resolvePendingBatchId();
+  const resolved = await resolveBatchId(threadKey);
   if (!resolved.batchId) return resolved.error!;
   const result = await callBatchApi(method, pathFn(resolved.batchId), body);
   return result.text;
@@ -130,25 +153,40 @@ async function withPendingBatch(
 
 export async function handleSdrApproval(
   action: ApprovalAction,
+  threadKey?: string,
 ): Promise<string> {
   switch (action.type) {
     case 'batch-status': {
+      // Status shows pending batches — use thread lookup if available,
+      // otherwise shows all pending
+      if (threadKey) {
+        const result = await callBatchApi(
+          'GET',
+          `/batch/by-thread?slack_ts=${encodeURIComponent(threadKey)}`,
+        );
+        if (result.ok) return result.text;
+      }
       const result = await callBatchApi('GET', '/batch/pending');
       return result.text;
     }
 
     case 'batch-approve':
-      return withPendingBatch('POST', (id) => `/batch/${id}/approve`);
+      return withBatch('POST', (id) => `/batch/${id}/approve`, threadKey);
 
     case 'batch-pause':
-      return withPendingBatch('POST', (id) => `/batch/${id}/pause`);
+      return withBatch('POST', (id) => `/batch/${id}/pause`, threadKey);
 
     case 'batch-skip': {
       // API accepts {name: "..."} or {number: N} — lookup is server-side
       const skipBody = /^\d+$/.test(action.target)
         ? { number: parseInt(action.target, 10) }
         : { name: action.target };
-      return withPendingBatch('POST', (id) => `/batch/${id}/skip`, skipBody);
+      return withBatch(
+        'POST',
+        (id) => `/batch/${id}/skip`,
+        threadKey,
+        skipBody,
+      );
     }
   }
 }

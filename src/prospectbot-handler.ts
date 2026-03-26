@@ -635,7 +635,7 @@ export async function handleProspectBotMessage(
     case 'batch-approve':
     case 'batch-skip':
     case 'batch-pause':
-      return handleSdrApproval(intent);
+      return handleSdrApproval(intent, threadKey);
 
     case 'crm-check': {
       if (!CRM_ENDPOINTS_LIVE['crm-check'])
@@ -644,7 +644,10 @@ export async function handleProspectBotMessage(
       // Store prospect emails in thread context for detail lookups
       if (threadKey && result.ok && Array.isArray(result.raw.prospects)) {
         const prospects = (
-          result.raw.prospects as Array<{ email?: string | null; name?: string }>
+          result.raw.prospects as Array<{
+            email?: string | null;
+            name?: string;
+          }>
         ).map((p) => ({ email: p.email ?? null, name: p.name }));
         updateThreadContext(threadKey, { crmProspects: prospects });
       }
