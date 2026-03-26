@@ -446,7 +446,7 @@ function buildHelpMessage(): string {
     '`skip <name>` — Remove a prospect from the batch',
     "`pause` / `not today` — Defer today's batch",
     '',
-    '_CRM Intelligence_ (coming soon)',
+    '_CRM Intelligence_',
     '`check hubspot <icp>` — Cross-check prospects against HubSpot',
     '`top planners` — Ranked list of most promising HubSpot planners',
     '`icp gaps [icp]` — Compare ICP against top HubSpot performers',
@@ -517,12 +517,12 @@ export async function handleProspectBotMessage(
 
     case 'show': {
       const result = await callApi('GET', `/icp/${intent.slug}`);
-      return result.text;
+      return `${result.text}\n\n_Try: \`estimate\` · \`sample 5\` · \`edit <instruction>\` · \`check hubspot\`_`;
     }
 
     case 'estimate': {
       const result = await callApi('GET', `/icp/${intent.slug}/estimate`);
-      return result.text;
+      return `${result.text}\n\n_Try: \`sample 5\` · \`show\` · \`edit <instruction>\`_`;
     }
 
     case 'sample': {
@@ -544,7 +544,7 @@ export async function handleProspectBotMessage(
       const result = await callApi('POST', `/icp/${intent.slug}/edit`, {
         instruction: intent.instruction,
       });
-      return result.text;
+      return `${result.text}\n\n_Try: \`show\` · \`estimate\` · \`sample 5\`_`;
     }
 
     case 'batch-status':
@@ -557,14 +557,14 @@ export async function handleProspectBotMessage(
       if (!CRM_ENDPOINTS_LIVE['crm-check'])
         return CRM_PLACEHOLDER_MESSAGES['crm-check'];
       const result = await callApi('POST', `/icp/${intent.slug}/crm-check`);
-      return result.text;
+      return `${result.text}\n\n_Try: \`top planners\` · \`icp gaps\` · \`show\`_`;
     }
 
     case 'top-planners': {
       if (!CRM_ENDPOINTS_LIVE['top-planners'])
         return CRM_PLACEHOLDER_MESSAGES['top-planners'];
       const result = await callApi('GET', '/hubspot/top-planners');
-      return result.text;
+      return `${result.text}\n\n_Try: \`icp gaps\` · \`check hubspot <icp>\`_`;
     }
 
     case 'icp-gaps': {
@@ -572,7 +572,7 @@ export async function handleProspectBotMessage(
         return CRM_PLACEHOLDER_MESSAGES['icp-gaps'];
       const slugParam = intent.slug ? `?slug=${intent.slug}` : '';
       const result = await callApi('GET', `/hubspot/icp-gaps${slugParam}`);
-      return result.text;
+      return `${result.text}\n\n_Try: \`top planners\` · \`check hubspot <icp>\` · \`edit <instruction>\`_`;
     }
 
     case 'help':
