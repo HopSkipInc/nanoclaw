@@ -102,10 +102,6 @@ export class SlackChannel implements Channel {
 
       if (!msg.text) return;
 
-      // Threaded replies are flattened into the channel conversation.
-      // The agent sees them alongside channel-level messages; responses
-      // always go to the channel, not back into the thread.
-
       const jid = `slack:${msg.channel}`;
       const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
       const isGroup = msg.channel_type !== 'im';
@@ -159,6 +155,7 @@ export class SlackChannel implements Channel {
         timestamp,
         is_from_me: isBotMessage,
         is_bot_message: isBotMessage,
+        thread_ts: (msg as { thread_ts?: string }).thread_ts,
       });
 
       // Immediately acknowledge trigger messages with an emoji reaction

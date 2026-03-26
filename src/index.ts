@@ -251,15 +251,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const messageText = latestMessage.content
       .replace(triggerPattern, '')
       .trim();
+    const triggerMessageId = latestMessage.thread_ts || latestMessage.id;
     try {
-      const response = await handleProspectBotMessage(messageText, chatJid);
-      await channel.sendMessage(chatJid, response);
+      const response = await handleProspectBotMessage(messageText, chatJid, triggerMessageId);
+      if (triggerMessageId && channel.sendThreadReply) {
+        await channel.sendThreadReply(chatJid, response, triggerMessageId);
+      } else {
+        await channel.sendMessage(chatJid, response);
+      }
     } catch (err) {
       logger.error({ err, chatJid }, 'ProspectBot handler error');
-      await channel.sendMessage(
-        chatJid,
-        'SDR Bot API is unavailable, try again later.',
-      );
+      const errorText = 'SDR Bot API is unavailable, try again later.';
+      if (triggerMessageId && channel.sendThreadReply) {
+        await channel.sendThreadReply(chatJid, errorText, triggerMessageId);
+      } else {
+        await channel.sendMessage(chatJid, errorText);
+      }
     }
     lastAgentTimestamp[chatJid] = latestMessage.timestamp;
     saveState();
@@ -1472,18 +1479,26 @@ async function startMessageLoop(): Promise<void> {
             const messageText = latestMessage.content
               .replace(loopTriggerPattern, '')
               .trim();
+            const triggerMessageId = latestMessage.thread_ts || latestMessage.id;
             try {
               const response = await handleProspectBotMessage(
                 messageText,
                 chatJid,
+                triggerMessageId,
               );
-              await channel.sendMessage(chatJid, response);
+              if (triggerMessageId && channel.sendThreadReply) {
+                await channel.sendThreadReply(chatJid, response, triggerMessageId);
+              } else {
+                await channel.sendMessage(chatJid, response);
+              }
             } catch (err) {
               logger.error({ err, chatJid }, 'ProspectBot handler error');
-              await channel.sendMessage(
-                chatJid,
-                'SDR Bot API is unavailable, try again later.',
-              );
+              const errorText = 'SDR Bot API is unavailable, try again later.';
+              if (triggerMessageId && channel.sendThreadReply) {
+                await channel.sendThreadReply(chatJid, errorText, triggerMessageId);
+              } else {
+                await channel.sendMessage(chatJid, errorText);
+              }
             }
             lastAgentTimestamp[chatJid] = latestMessage.timestamp;
             saveState();
