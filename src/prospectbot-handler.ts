@@ -7,7 +7,10 @@
  */
 import { logger } from './logger.js';
 import https from 'https';
-import { handleSdrApproval, type ApprovalAction } from './sdr-approval-handler.js';
+import {
+  handleSdrApproval,
+  type ApprovalAction,
+} from './sdr-approval-handler.js';
 
 const SDR_API_BASE =
   'https://hs-sdr-app-dev.yellowpond-a7d782a6.eastus2.azurecontainerapps.io';
@@ -71,9 +74,16 @@ function getThreadContext(threadKey: string): ThreadContext | undefined {
   return ctx;
 }
 
-function updateThreadContext(threadKey: string, updates: Partial<ThreadContext>): void {
+function updateThreadContext(
+  threadKey: string,
+  updates: Partial<ThreadContext>,
+): void {
   const existing = getThreadContext(threadKey) || { lastActivity: Date.now() };
-  threadContexts[threadKey] = { ...existing, ...updates, lastActivity: Date.now() };
+  threadContexts[threadKey] = {
+    ...existing,
+    ...updates,
+    lastActivity: Date.now(),
+  };
 }
 
 function getApiKey(): string {
@@ -164,7 +174,10 @@ type Intent =
  * Classify user intent via Haiku LLM call.
  * Falls back to keyword matching if the API call fails.
  */
-async function classifyProspectBotIntent(text: string, contextSlug?: IcpSlug): Promise<Intent> {
+async function classifyProspectBotIntent(
+  text: string,
+  contextSlug?: IcpSlug,
+): Promise<Intent> {
   const slug = detectSlug(text);
 
   try {
@@ -199,7 +212,10 @@ async function classifyProspectBotIntent(text: string, contextSlug?: IcpSlug): P
             };
           break;
         case 'help':
-          return { type: 'help' };
+          // If we have a context slug, don't return help yet — fall through
+          // to keyword fallback which can resolve slug-dependent intents
+          if (!contextSlug) return { type: 'help' };
+          break;
         case 'batch-status':
           return { type: 'batch-status' };
         case 'batch-approve':
@@ -235,23 +251,45 @@ function classifyByKeywords(text: string, fallbackSlug?: IcpSlug): Intent {
   const slug = detectSlug(text) || fallbackSlug || null;
 
   // Batch approval intents (check before ICP intents)
-  if (/\b(approve\s*all|approve|lgtm|send them|looks good|go ahead)\b/.test(lower))
+  if (
+    /\b(approve\s*all|approve|lgtm|send them|looks good|go ahead)\b/.test(lower)
+  )
     return { type: 'batch-approve' };
   if (/\b(pause|hold off|not today|skip today)\b/.test(lower))
     return { type: 'batch-pause' };
-  if (/\bpending\b/.test(lower) || /\bbatch\b/.test(lower) || /what'?s pending/.test(lower))
+  if (
+    /\bpending\b/.test(lower) ||
+    /\bbatch\b/.test(lower) ||
+    /what'?s pending/.test(lower)
+  )
     return { type: 'batch-status' };
   if (/\b(skip|remove)\b/.test(lower) && !slug) {
-    const target = text.replace(/\b(skip|remove)\b/i, '').replace(/#/g, '').trim();
+    const target = text
+      .replace(/\b(skip|remove)\b/i, '')
+      .replace(/#/g, '')
+      .trim();
     if (target) return { type: 'batch-skip', target };
   }
 
   // CRM intelligence intents
-  if (/\b(crm.?check|check.*(crm|hubspot)|already in hubspot|in hubspot|crm lookup|do we know)\b/.test(lower) && slug)
+  if (
+    /\b(crm.?check|check.*(crm|hubspot)|already in hubspot|in hubspot|crm lookup|do we know)\b/.test(
+      lower,
+    ) &&
+    slug
+  )
     return { type: 'crm-check', slug };
-  if (/\b(top planners|best planners|hot leads|best prospects|top contacts|most promising planners|who should we target)\b/.test(lower))
+  if (
+    /\b(top planners|best planners|hot leads|best prospects|top contacts|most promising planners|who should we target)\b/.test(
+      lower,
+    )
+  )
     return { type: 'top-planners' };
-  if (/\b(icp gaps?|look.?alike|what are we missing|icp recommend|compare.*hubspot|how does.*compare)\b/.test(lower))
+  if (
+    /\b(icp gaps?|look.?alike|what are we missing|icp recommend|compare.*hubspot|how does.*compare)\b/.test(
+      lower,
+    )
+  )
     return { type: 'icp-gaps', slug: slug ?? null };
 
   // ICP intents
@@ -403,10 +441,10 @@ function buildHelpMessage(): string {
     '`edit <icp> <instruction>` — Edit ICP with natural language',
     '',
     '_Batch Approval_',
-    '`status` / `what\'s pending` — Show pending batches',
+    "`status` / `what's pending` — Show pending batches",
     '`approve` / `lgtm` / `send them` — Approve current batch',
     '`skip <name>` — Remove a prospect from the batch',
-    '`pause` / `not today` — Defer today\'s batch',
+    "`pause` / `not today` — Defer today's batch",
     '',
     '_CRM Intelligence_ (coming soon)',
     '`check hubspot <icp>` — Cross-check prospects against HubSpot',
@@ -463,7 +501,8 @@ export async function handleProspectBotMessage(
 
   // Update thread context with resolved intent
   if (threadKey) {
-    const intentSlug = 'slug' in intent ? (intent as { slug: IcpSlug }).slug : undefined;
+    const intentSlug =
+      'slug' in intent ? (intent as { slug: IcpSlug }).slug : undefined;
     updateThreadContext(threadKey, {
       ...(intentSlug ? { slug: intentSlug } : {}),
       lastIntent: intent.type,
@@ -515,19 +554,22 @@ export async function handleProspectBotMessage(
       return handleSdrApproval(intent);
 
     case 'crm-check': {
-      if (!CRM_ENDPOINTS_LIVE['crm-check']) return CRM_PLACEHOLDER_MESSAGES['crm-check'];
+      if (!CRM_ENDPOINTS_LIVE['crm-check'])
+        return CRM_PLACEHOLDER_MESSAGES['crm-check'];
       const result = await callApi('POST', `/icp/${intent.slug}/crm-check`);
       return result.text;
     }
 
     case 'top-planners': {
-      if (!CRM_ENDPOINTS_LIVE['top-planners']) return CRM_PLACEHOLDER_MESSAGES['top-planners'];
+      if (!CRM_ENDPOINTS_LIVE['top-planners'])
+        return CRM_PLACEHOLDER_MESSAGES['top-planners'];
       const result = await callApi('GET', '/hubspot/top-planners');
       return result.text;
     }
 
     case 'icp-gaps': {
-      if (!CRM_ENDPOINTS_LIVE['icp-gaps']) return CRM_PLACEHOLDER_MESSAGES['icp-gaps'];
+      if (!CRM_ENDPOINTS_LIVE['icp-gaps'])
+        return CRM_PLACEHOLDER_MESSAGES['icp-gaps'];
       const slugParam = intent.slug ? `?slug=${intent.slug}` : '';
       const result = await callApi('GET', `/hubspot/icp-gaps${slugParam}`);
       return result.text;
