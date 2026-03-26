@@ -36,7 +36,8 @@ type CrmIntelType = 'crm-check' | 'top-planners' | 'icp-gaps';
 type CrmIntelAction =
   | { type: 'crm-check'; slug: IcpSlug }
   | { type: 'top-planners' }
-  | { type: 'icp-gaps'; slug: IcpSlug | null };
+  | { type: 'icp-gaps'; slug: IcpSlug | null }
+  | { type: 'crm-detail'; target: string };
 
 const KNOWN_SLUGS = ['fiona', 'carrie', 'nancy'] as const;
 type IcpSlug = (typeof KNOWN_SLUGS)[number];
@@ -57,6 +58,7 @@ interface ThreadContext {
   batchId?: string;
   lastIntent?: string;
   lastActivity: number;
+  crmProspects?: Array<{ email: string; name?: string }>;
 }
 
 const THREAD_CONTEXT_TTL_MS = 60 * 60 * 1000; // 60 minutes
@@ -160,6 +162,69 @@ async function callApi(
   }
 }
 
+/**
+ * Like callApi but also returns the raw parsed JSON for structured field extraction.
+ */
+async function callApiRaw(
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+): Promise<{
+  ok: boolean;
+  status: number;
+  text: string;
+  raw: Record<string, unknown>;
+}> {
+  const url = `${SDR_API_BASE}${path}`;
+  logger.info({ method, url }, 'ProspectBot API call');
+
+  const headers: Record<string, string> = {
+    'X-Api-Key': getApiKey(),
+    Accept: 'application/json',
+  };
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+
+    const responseText = await response.text();
+    logger.info({ status: response.status, path }, 'ProspectBot API response');
+
+    if (!response.ok) {
+      let detail = responseText;
+      try {
+        const parsed = JSON.parse(responseText);
+        if (parsed.detail) detail = parsed.detail;
+      } catch {
+        // use raw text
+      }
+      return {
+        ok: false,
+        status: response.status,
+        text: `SDR Bot API error (${response.status}): ${detail}`,
+        raw: {},
+      };
+    }
+
+    const parsed = JSON.parse(responseText);
+    return { ok: true, status: response.status, text: parsed.text, raw: parsed };
+  } catch (err) {
+    logger.error({ err, path }, 'ProspectBot API call failed');
+    return {
+      ok: false,
+      status: 0,
+      text: 'SDR Bot API is unavailable, try again later.',
+      raw: {},
+    };
+  }
+}
+
 type Intent =
   | { type: 'list' }
   | { type: 'show'; slug: IcpSlug }
@@ -233,6 +298,10 @@ async function classifyProspectBotIntent(
           return { type: 'top-planners' };
         case 'icp-gaps':
           return { type: 'icp-gaps', slug: resolvedSlug ?? null };
+        case 'crm-detail':
+          if (classified.target)
+            return { type: 'crm-detail', target: classified.target };
+          break;
       }
     }
   } catch (err) {
@@ -269,6 +338,14 @@ function classifyByKeywords(text: string, fallbackSlug?: IcpSlug): Intent {
       .replace(/#/g, '')
       .trim();
     if (target) return { type: 'batch-skip', target };
+  }
+
+  // CRM detail intent
+  if (/\b(detail|details\s+on|profile)\b/.test(lower)) {
+    const target = text
+      .replace(/\b(detail|details\s+on|profile)\b/i, '')
+      .trim();
+    if (target) return { type: 'crm-detail', target };
   }
 
   // CRM intelligence intents
@@ -320,7 +397,8 @@ interface HaikuClassification {
     | 'batch-pause'
     | 'crm-check'
     | 'top-planners'
-    | 'icp-gaps';
+    | 'icp-gaps'
+    | 'crm-detail';
   slug?: IcpSlug;
   count?: number;
   instruction?: string;
@@ -358,6 +436,7 @@ CRM intelligence:
 - "crm-check" — user wants to cross-check prospects against HubSpot CRM ("check hubspot", "already in hubspot", "crm lookup", "do we know these people")
 - "top-planners" — user wants to see the best/most promising planners from HubSpot ("top planners", "best prospects", "hot leads", "who should we target")
 - "icp-gaps" — user wants to compare ICP definitions against HubSpot performers ("icp gaps", "what are we missing", "look-alike analysis", "how does fiona compare")
+- "crm-detail" — user wants full profile on a specific contact from a CRM check ("detail 3", "detail jane@acme.com", "profile 2", "details on 1")
 
 Other:
 - "help" — user is confused or asking what commands are available
@@ -556,8 +635,19 @@ export async function handleProspectBotMessage(
     case 'crm-check': {
       if (!CRM_ENDPOINTS_LIVE['crm-check'])
         return CRM_PLACEHOLDER_MESSAGES['crm-check'];
-      const result = await callApi('POST', `/icp/${intent.slug}/crm-check`);
-      return `${result.text}\n\n_Try: \`top planners\` · \`icp gaps\` · \`show\`_`;
+      const result = await callApiRaw('POST', `/icp/${intent.slug}/crm-check`);
+      // Store prospect emails in thread context for detail lookups
+      if (threadKey && result.ok && Array.isArray(result.raw.prospects)) {
+        const prospects = (
+          result.raw.prospects as Array<{ email?: string; name?: string }>
+        )
+          .filter((p) => p.email)
+          .map((p) => ({ email: p.email!, name: p.name }));
+        if (prospects.length > 0) {
+          updateThreadContext(threadKey, { crmProspects: prospects });
+        }
+      }
+      return `${result.text}\n\n_Try: \`detail <number>\` · \`top planners\` · \`icp gaps\`_`;
     }
 
     case 'top-planners': {
@@ -573,6 +663,41 @@ export async function handleProspectBotMessage(
       const slugParam = intent.slug ? `?slug=${intent.slug}` : '';
       const result = await callApi('GET', `/hubspot/icp-gaps${slugParam}`);
       return `${result.text}\n\n_Try: \`top planners\` · \`check hubspot <icp>\` · \`edit <instruction>\`_`;
+    }
+
+    case 'crm-detail': {
+      const ctx2 = threadKey ? getThreadContext(threadKey) : undefined;
+      if (ctx2?.lastIntent !== 'crm-check' && ctx2?.lastIntent !== 'crm-detail') {
+        return 'Run a CRM check first, then ask for details.';
+      }
+      const detailSlug = ctx2?.slug;
+      if (!detailSlug) return 'Run a CRM check first, then ask for details.';
+
+      let email: string;
+      if (intent.target.includes('@')) {
+        // Direct email
+        email = intent.target;
+      } else {
+        // Number — resolve from stored prospects
+        const num = parseInt(intent.target, 10);
+        const prospects = ctx2?.crmProspects;
+        if (!prospects || prospects.length === 0) {
+          return 'No prospect data available — run a CRM check first, or provide an email address directly.';
+        }
+        if (isNaN(num) || num < 1 || num > prospects.length) {
+          return `That CRM check only had ${prospects.length} contact${prospects.length === 1 ? '' : 's'}. Try \`detail 1\` through \`detail ${prospects.length}\`, or use an email address.`;
+        }
+        email = prospects[num - 1].email;
+      }
+
+      const result = await callApi(
+        'GET',
+        `/icp/${detailSlug}/crm-check/${encodeURIComponent(email)}`,
+      );
+      if (!result.ok && result.status === 404) {
+        return `No HubSpot profile found for ${email}.`;
+      }
+      return result.text;
     }
 
     case 'help':
