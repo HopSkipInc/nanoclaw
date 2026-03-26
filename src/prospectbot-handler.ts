@@ -58,7 +58,7 @@ interface ThreadContext {
   batchId?: string;
   lastIntent?: string;
   lastActivity: number;
-  crmProspects?: Array<{ email: string; name?: string }>;
+  crmProspects?: Array<{ email: string | null; name?: string }>;
 }
 
 const THREAD_CONTEXT_TTL_MS = 60 * 60 * 1000; // 60 minutes
@@ -213,7 +213,12 @@ async function callApiRaw(
     }
 
     const parsed = JSON.parse(responseText);
-    return { ok: true, status: response.status, text: parsed.text, raw: parsed };
+    return {
+      ok: true,
+      status: response.status,
+      text: parsed.text,
+      raw: parsed,
+    };
   } catch (err) {
     logger.error({ err, path }, 'ProspectBot API call failed');
     return {
@@ -639,13 +644,9 @@ export async function handleProspectBotMessage(
       // Store prospect emails in thread context for detail lookups
       if (threadKey && result.ok && Array.isArray(result.raw.prospects)) {
         const prospects = (
-          result.raw.prospects as Array<{ email?: string; name?: string }>
-        )
-          .filter((p) => p.email)
-          .map((p) => ({ email: p.email!, name: p.name }));
-        if (prospects.length > 0) {
-          updateThreadContext(threadKey, { crmProspects: prospects });
-        }
+          result.raw.prospects as Array<{ email?: string | null; name?: string }>
+        ).map((p) => ({ email: p.email ?? null, name: p.name }));
+        updateThreadContext(threadKey, { crmProspects: prospects });
       }
       return `${result.text}\n\n_Try: \`detail <number>\` · \`top planners\` · \`icp gaps\`_`;
     }
@@ -667,7 +668,10 @@ export async function handleProspectBotMessage(
 
     case 'crm-detail': {
       const ctx2 = threadKey ? getThreadContext(threadKey) : undefined;
-      if (ctx2?.lastIntent !== 'crm-check' && ctx2?.lastIntent !== 'crm-detail') {
+      if (
+        ctx2?.lastIntent !== 'crm-check' &&
+        ctx2?.lastIntent !== 'crm-detail'
+      ) {
         return 'Run a CRM check first, then ask for details.';
       }
       const detailSlug = ctx2?.slug;
@@ -687,7 +691,12 @@ export async function handleProspectBotMessage(
         if (isNaN(num) || num < 1 || num > prospects.length) {
           return `That CRM check only had ${prospects.length} contact${prospects.length === 1 ? '' : 's'}. Try \`detail 1\` through \`detail ${prospects.length}\`, or use an email address.`;
         }
-        email = prospects[num - 1].email;
+        const prospect = prospects[num - 1];
+        if (!prospect.email) {
+          const name = prospect.name || `#${num}`;
+          return `No email on file for ${name} (pre-enrichment). Try providing their email directly: \`detail jane@acme.com\``;
+        }
+        email = prospect.email;
       }
 
       const result = await callApi(
