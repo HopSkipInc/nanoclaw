@@ -237,6 +237,7 @@ type Intent =
   | { type: 'sample'; slug: IcpSlug; count: number }
   | { type: 'edit'; slug: IcpSlug; instruction: string }
   | { type: 'customer-profile'; slug: IcpSlug }
+  | { type: 'explain'; question: string }
   | { type: 'guide' }
   | { type: 'help' }
   | ApprovalAction
@@ -313,6 +314,8 @@ async function classifyProspectBotIntent(
           if (resolvedSlug)
             return { type: 'customer-profile', slug: resolvedSlug };
           break;
+        case 'explain':
+          return { type: 'explain', question: text };
         case 'guide':
           return { type: 'guide' };
       }
@@ -361,9 +364,17 @@ function classifyByKeywords(text: string, fallbackSlug?: IcpSlug): Intent {
     if (target) return { type: 'crm-detail', target };
   }
 
+  // Explain intent — "what happens when", "how does X work", "does this affect"
+  if (
+    /\b(what happens|how does|does.*(affect|touch|change|modify|cost|push)|where do.*(come from|go)|is it safe)\b/.test(
+      lower,
+    )
+  )
+    return { type: 'explain', question: text };
+
   // Guide / onboarding intent
   if (
-    /\b(getting started|walk me through|what can you do|how does this work|guide|tutorial|i'?m new|show me around)\b/.test(
+    /\b(getting started|walk me through|what can you do|guide|tutorial|i'?m new|show me around)\b/.test(
       lower,
     )
   )
@@ -430,6 +441,7 @@ interface HaikuClassification {
     | 'icp-gaps'
     | 'crm-detail'
     | 'customer-profile'
+    | 'explain'
     | 'guide';
   slug?: IcpSlug;
   count?: number;
@@ -471,8 +483,11 @@ Batch approval (daily prospect batches):
 - "batch-skip" — skip a specific prospect ("skip 3", "skip Maria", "remove the second one")
 - "batch-pause" — defer the whole batch ("pause", "not today", "hold off", "skip today")
 
+Questions about the system:
+- "explain" — user is asking how something works, what happens when they do something, or wants to understand a feature ("what happens when I approve", "how does sampling work", "what does approve do to HubSpot", "where do the prospects come from", "does this cost money", "what data does this touch")
+
 Onboarding:
-- "guide" — user wants a walkthrough of what they can do ("getting started", "what can you do", "how does this work", "walk me through it", "guide", "tutorial", "I'm new")
+- "guide" — user wants a full walkthrough of what they can do ("getting started", "what can you do", "walk me through it", "guide", "tutorial", "I'm new")
 - "help" — quick command reference ("help", "commands")
 
 Respond with ONLY valid JSON, no markdown:
@@ -542,6 +557,122 @@ Respond with ONLY valid JSON, no markdown:
   });
 }
 
+// ── Knowledge base for answering "how does X work" questions ──────────────
+// This is the single source of truth for the explain intent. Update this when
+// behavior changes — no code changes needed for new questions.
+const KNOWLEDGE_BASE = `
+# Rielly — How It Works
+
+## What Rielly is
+Rielly is a revenue intelligence bot for sales teams. It helps AEs understand their customer base, refine targeting, find new prospects, and manage daily prospect batches — all through natural Slack conversation.
+
+## Data sources
+- **FullEnrich** — third-party prospect discovery service. Searches cost credits (~$0.03/contact). Used for "sample" and discovery.
+- **HubSpot** — your CRM. Read-only for most operations (CRM check, top planners, customer profiles). Batch approval does NOT currently push to HubSpot — it only marks prospects as approved in Rielly's internal state.
+- **ICP configs** — YAML files defining ideal customer profiles (titles, industries, company size, location). Stored in the SDR pipeline, editable via natural language.
+
+## Actions and what they do
+
+### Sampling (costs money)
+- "sample" / "find me prospects" calls FullEnrich, which costs credits
+- Before sampling, Rielly always shows an estimate (match count + credit cost) and asks for confirmation
+- You must explicitly confirm before any credits are spent
+
+### Batch approval
+- The pipeline generates daily prospect batches for review
+- **"approve"** marks all pending prospects in a batch as approved in Rielly's internal database
+- **TODAY: Approve does NOT push contacts to HubSpot or any other system.** It is a status change only. The CRM push pipeline is not yet connected.
+- **"skip [name/number]"** removes one prospect from the batch
+- **"pause"** defers the entire batch
+
+### CRM check (read-only)
+- Cross-references prospects against HubSpot contacts
+- Read-only — does not create, update, or delete any HubSpot data
+- Shows lead grade, engagement status, and pipeline stage
+
+### Customer profile (read-only)
+- Analyzes your actual HubSpot customer base for an ICP segment
+- Compares real customers against ICP targeting definitions
+- Read-only — no CRM modifications
+
+### ICP editing
+- "edit" changes the targeting config (titles, industries, headcount, etc.)
+- Changes are saved to the ICP YAML config file
+- Does not trigger any external API calls or data changes
+
+### Estimates (free)
+- Shows match count and credit cost without pulling results
+- No credits spent, no external calls beyond FullEnrich's count endpoint
+
+## What does NOT happen (common concerns)
+- Approving a batch does NOT create contacts in HubSpot (not yet wired)
+- CRM check does NOT modify HubSpot data
+- Viewing profiles does NOT trigger enrichment
+- No data is sent to external systems without explicit confirmation
+- No emails are sent — Rielly is purely a data and targeting tool
+`;
+
+async function answerFromKnowledgeBase(question: string): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return buildHelpMessage();
+
+  const prompt = `You are Rielly, a revenue intelligence bot. A user asked a question about how you work. Answer it clearly and concisely using ONLY the knowledge base below. If the knowledge base doesn't cover it, say so honestly.
+
+Use Slack mrkdwn formatting. Keep the answer to 2-4 sentences unless the question needs more detail. Be direct — lead with the answer, not preamble.
+
+<knowledge-base>
+${KNOWLEDGE_BASE}
+</knowledge-base>
+
+User question: "${question}"`;
+
+  const body = JSON.stringify({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 500,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 5000,
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: string) => (data += chunk));
+        res.on('end', () => {
+          try {
+            if (res.statusCode !== 200) {
+              resolve(buildHelpMessage());
+              return;
+            }
+            const response = JSON.parse(data);
+            const answer = response.content?.[0]?.text || '';
+            resolve(answer.trim() || buildHelpMessage());
+          } catch {
+            resolve(buildHelpMessage());
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(buildHelpMessage()));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(buildHelpMessage());
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
 function buildHelpMessage(): string {
   return [
     '*Rielly — Revenue Intelligence*',
@@ -567,14 +698,13 @@ function buildHelpMessage(): string {
   ].join('\n');
 }
 
-
 function buildGuideMessage(): string {
   return [
     '*Getting Started with Rielly*',
     '',
     "Rielly helps you understand who your best customers are, whether you're targeting the right people, and find new prospects that match. Here's how to use it:",
     '',
-    '*Step 1: See what\'s working*',
+    "*Step 1: See what's working*",
     '_"What do our fiona customers look like?"_',
     "This pulls your actual customer data — who they are, what titles they hold, how active they are on the platform, where they're located. It compares this against your ICP definition and tells you what's missing.",
     '',
@@ -589,11 +719,11 @@ function buildGuideMessage(): string {
     '',
     '*Step 4: Check before you reach out*',
     '_"Do we already know these people?"_',
-    "Cross-checks your sample against HubSpot — shows who's already in the system, their grade, and engagement. Say \"tell me more about #3\" to drill in.",
+    'Cross-checks your sample against HubSpot — shows who\'s already in the system, their grade, and engagement. Say "tell me more about #3" to drill in.',
     '',
     '*Step 5: Review daily batches*',
     '_"What\'s pending?"_',
-    "When the pipeline runs, it'll post prospect batches here for your approval. Say \"approve\" to send, \"skip Maria\" to remove one, or \"pause\" to defer.",
+    'When the pipeline runs, it\'ll post prospect batches here for your approval. Say "approve" to send, "skip Maria" to remove one, or "pause" to defer.',
     '',
     '*Other things you can ask:*',
     '• _"Who are our best leads?"_ — top planners by HubSpot grade',
@@ -784,6 +914,9 @@ export async function handleProspectBotMessage(
       }
       return result.text;
     }
+
+    case 'explain':
+      return answerFromKnowledgeBase(intent.question);
 
     case 'guide':
       return buildGuideMessage();
