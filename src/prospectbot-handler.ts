@@ -236,6 +236,7 @@ type Intent =
   | { type: 'estimate'; slug: IcpSlug }
   | { type: 'sample'; slug: IcpSlug; count: number }
   | { type: 'edit'; slug: IcpSlug; instruction: string }
+  | { type: 'customer-profile'; slug: IcpSlug }
   | { type: 'help' }
   | ApprovalAction
   | CrmIntelAction;
@@ -307,6 +308,10 @@ async function classifyProspectBotIntent(
           if (classified.target)
             return { type: 'crm-detail', target: classified.target };
           break;
+        case 'customer-profile':
+          if (resolvedSlug)
+            return { type: 'customer-profile', slug: resolvedSlug };
+          break;
       }
     }
   } catch (err) {
@@ -352,6 +357,15 @@ function classifyByKeywords(text: string, fallbackSlug?: IcpSlug): Intent {
       .trim();
     if (target) return { type: 'crm-detail', target };
   }
+
+  // Customer profile intent
+  if (
+    /\b(customer\s+profile|who are our customers|customer analysis|success profile|what do.*customers look like)\b/.test(
+      lower,
+    ) &&
+    slug
+  )
+    return { type: 'customer-profile', slug };
 
   // CRM intelligence intents
   if (
@@ -403,7 +417,8 @@ interface HaikuClassification {
     | 'crm-check'
     | 'top-planners'
     | 'icp-gaps'
-    | 'crm-detail';
+    | 'crm-detail'
+    | 'customer-profile';
   slug?: IcpSlug;
   count?: number;
   instruction?: string;
@@ -442,6 +457,7 @@ CRM intelligence:
 - "top-planners" — user wants to see the best/most promising planners from HubSpot ("top planners", "best prospects", "hot leads", "who should we target")
 - "icp-gaps" — user wants to compare ICP definitions against HubSpot performers ("icp gaps", "what are we missing", "look-alike analysis", "how does fiona compare")
 - "crm-detail" — user wants full profile on a specific contact from a CRM check ("detail 3", "detail jane@acme.com", "profile 2", "details on 1")
+- "customer-profile" — user wants to see what actual customers look like vs the ICP definition ("customer profile fiona", "who are our fiona customers", "what do our customers look like", "success profile carrie")
 
 Other:
 - "help" — user is confused or asking what commands are available
@@ -531,6 +547,7 @@ function buildHelpMessage(): string {
     "`pause` / `not today` — Defer today's batch",
     '',
     '_CRM Intelligence_',
+    '`customer profile <icp>` — What do our actual customers look like vs the ICP?',
     '`check hubspot <icp>` — Cross-check prospects against HubSpot',
     '`top planners` — Ranked list of most promising HubSpot planners',
     '`icp gaps [icp]` — Compare ICP against top HubSpot performers',
@@ -666,7 +683,15 @@ export async function handleProspectBotMessage(
         return CRM_PLACEHOLDER_MESSAGES['icp-gaps'];
       const slugParam = intent.slug ? `?slug=${intent.slug}` : '';
       const result = await callApi('GET', `/hubspot/icp-gaps${slugParam}`);
-      return `${result.text}\n\n_Try: \`top planners\` · \`check hubspot <icp>\` · \`edit <instruction>\`_`;
+      return `${result.text}\n\n_Try: \`top planners\` · \`check hubspot <icp>\` · \`edit <instruction>\` · \`customer profile <icp>\`_`;
+    }
+
+    case 'customer-profile': {
+      const result = await callApi(
+        'GET',
+        `/hubspot/customer-profile?slug=${intent.slug}`,
+      );
+      return result.text;
     }
 
     case 'crm-detail': {
