@@ -237,6 +237,7 @@ type Intent =
   | { type: 'sample'; slug: IcpSlug; count: number }
   | { type: 'edit'; slug: IcpSlug; instruction: string }
   | { type: 'customer-profile'; slug: IcpSlug }
+  | { type: 'guide' }
   | { type: 'help' }
   | ApprovalAction
   | CrmIntelAction;
@@ -312,6 +313,8 @@ async function classifyProspectBotIntent(
           if (resolvedSlug)
             return { type: 'customer-profile', slug: resolvedSlug };
           break;
+        case 'guide':
+          return { type: 'guide' };
       }
     }
   } catch (err) {
@@ -358,9 +361,17 @@ function classifyByKeywords(text: string, fallbackSlug?: IcpSlug): Intent {
     if (target) return { type: 'crm-detail', target };
   }
 
+  // Guide / onboarding intent
+  if (
+    /\b(getting started|walk me through|what can you do|how does this work|guide|tutorial|i'?m new|show me around)\b/.test(
+      lower,
+    )
+  )
+    return { type: 'guide' };
+
   // Customer profile intent
   if (
-    /\b(customer\s+profile|who are our customers|customer analysis|success profile|what do.*customers look like)\b/.test(
+    /\b(customer\s+profile|who are our customers|customer analysis|success profile|what do.*customers look like|are we targeting the right|what'?s working)\b/.test(
       lower,
     ) &&
     slug
@@ -418,7 +429,8 @@ interface HaikuClassification {
     | 'top-planners'
     | 'icp-gaps'
     | 'crm-detail'
-    | 'customer-profile';
+    | 'customer-profile'
+    | 'guide';
   slug?: IcpSlug;
   count?: number;
   instruction?: string;
@@ -431,36 +443,37 @@ async function classifyWithHaiku(
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 
-  const prompt = `You are a classifier for an SDR bot that manages ICP profiles AND daily prospect batch approvals. The user sent this message:
+  const prompt = `You are a classifier for Rielly, a revenue intelligence bot for sales teams. The user is an account executive chatting naturally in Slack. Interpret their message and classify the intent.
 
-"${text}"
+User message: "${text}"
 
-Available ICPs: fiona, carrie, nancy
+Available ICPs (ideal customer profiles): fiona (3rd party M&E agencies), carrie (corporate event departments), nancy (associations & non-profits)
 
-Classify the intent as one of:
+Classify as one of these intents:
+
+Understanding customers & targeting:
+- "customer-profile" — who are our actual customers, what do they look like, how do they compare to the ICP ("who are our best customers", "what does a typical fiona look like", "are we targeting the right people", "show me the customer profile for fiona", "what's working")
+- "icp-gaps" — what's missing from our targeting, where are we leaving money on the table ("what are we missing", "how does our targeting compare", "any gaps in fiona", "are we missing any titles", "who are we not going after that we should be")
+- "top-planners" — who are the strongest leads in our pipeline ("who are our best leads", "top prospects", "who should I call first", "hot leads", "most promising planners")
+- "crm-check" — do we already know these prospects, are they in HubSpot ("do we know these people", "check hubspot", "are they already in our system", "crm lookup")
+- "crm-detail" — drill into a specific contact from a previous CRM check ("tell me more about #3", "detail on the second one", "profile 2", "details on jane@acme.com")
 
 ICP management:
-- "list" — user wants to see all ICPs
-- "show" — user wants to see a specific ICP's config
-- "estimate" — user wants match count / credit balance for an ICP
-- "sample" — user wants to pull sample prospect results
-- "edit" — user wants to modify an ICP (any change, addition, removal, exclusion)
+- "show" — see current ICP targeting config ("show me fiona", "what does the fiona ICP look like", "current targeting for carrie")
+- "list" — see all available ICPs ("what ICPs do we have", "list them", "show all")
+- "estimate" — how many matches and credit cost ("how many fiona matches", "what would it cost", "estimate carrie")
+- "sample" — pull real prospect results from FullEnrich ("find me some prospects", "show me 5 fionas", "pull some samples", "who's out there")
+- "edit" — change the ICP targeting ("add Senior Event Manager to fiona", "exclude catering companies", "widen the headcount to 100", "narrow fiona to only founders")
 
-Batch approval:
-- "batch-status" — user wants to see pending batches or check status ("status", "what's pending", "show batches")
-- "batch-approve" — user wants to approve a batch and send the emails ("approve", "approve all", "lgtm", "send them", "looks good", "go ahead")
-- "batch-skip" — user wants to skip/remove a specific prospect from the batch ("skip 3", "skip Maria", "remove #5")
-- "batch-pause" — user wants to pause or defer today's batch ("pause", "skip today", "hold off", "not today")
+Batch approval (daily prospect batches):
+- "batch-status" — check pending batches ("what's pending", "any batches to review", "show me today's prospects")
+- "batch-approve" — approve and send ("approve", "looks good", "send them", "lgtm", "go ahead")
+- "batch-skip" — skip a specific prospect ("skip 3", "skip Maria", "remove the second one")
+- "batch-pause" — defer the whole batch ("pause", "not today", "hold off", "skip today")
 
-CRM intelligence:
-- "crm-check" — user wants to cross-check prospects against HubSpot CRM ("check hubspot", "already in hubspot", "crm lookup", "do we know these people")
-- "top-planners" — user wants to see the best/most promising planners from HubSpot ("top planners", "best prospects", "hot leads", "who should we target")
-- "icp-gaps" — user wants to compare ICP definitions against HubSpot performers ("icp gaps", "what are we missing", "look-alike analysis", "how does fiona compare")
-- "crm-detail" — user wants full profile on a specific contact from a CRM check ("detail 3", "detail jane@acme.com", "profile 2", "details on 1")
-- "customer-profile" — user wants to see what actual customers look like vs the ICP definition ("customer profile fiona", "who are our fiona customers", "what do our customers look like", "success profile carrie")
-
-Other:
-- "help" — user is confused or asking what commands are available
+Onboarding:
+- "guide" — user wants a walkthrough of what they can do ("getting started", "what can you do", "how does this work", "walk me through it", "guide", "tutorial", "I'm new")
+- "help" — quick command reference ("help", "commands")
 
 Respond with ONLY valid JSON, no markdown:
 {"intent": "<type>", "slug": "<icp-name-or-null>", "count": <number-or-null>, "instruction": "<edit-instruction-or-null>", "target": "<skip-target-name-or-number-or-null>"}`;
@@ -531,28 +544,63 @@ Respond with ONLY valid JSON, no markdown:
 
 function buildHelpMessage(): string {
   return [
-    '*ProspectBot Commands*',
+    '*Rielly — Revenue Intelligence*',
     '',
-    '_ICP Management_',
-    '`list` / `show all` / `icps` — List all ICPs with status',
-    '`show <icp>` / `config <icp>` — Show ICP configuration',
-    '`estimate <icp>` — Match count + credit balance',
-    '`sample <icp> [count]` — Pull sample results (costs credits)',
-    '`edit <icp> <instruction>` — Edit ICP with natural language',
+    'Just ask naturally — "who are our best customers", "are we targeting the right people", "find me some prospects." Or use these:',
     '',
-    '_Batch Approval_',
-    "`status` / `what's pending` — Show pending batches",
-    '`approve` / `lgtm` / `send them` — Approve current batch',
-    '`skip <name>` — Remove a prospect from the batch',
-    "`pause` / `not today` — Defer today's batch",
+    '_Understand & target_',
+    '• `customer profile <icp>` — What do actual customers look like vs the ICP?',
+    '• `icp gaps <icp>` — Where is the ICP leaving money on the table?',
+    '• `top planners` — Best leads in the pipeline right now',
+    '• `check hubspot <icp>` — Are these prospects already in HubSpot?',
     '',
-    '_CRM Intelligence_',
-    '`customer profile <icp>` — What do our actual customers look like vs the ICP?',
-    '`check hubspot <icp>` — Cross-check prospects against HubSpot',
-    '`top planners` — Ranked list of most promising HubSpot planners',
-    '`icp gaps [icp]` — Compare ICP against top HubSpot performers',
+    '_Find & refine_',
+    '• `show <icp>` — Current targeting config',
+    '• `edit <icp> <change>` — Adjust targeting ("add Senior Event Manager to titles")',
+    '• `sample <icp> [count]` — Pull real prospects (costs credits)',
     '',
-    `Available ICPs: *${KNOWN_SLUGS.join('*, *')}*`,
+    '_Daily batches_',
+    "• `what's pending` — Today's prospects to review",
+    '• `approve` / `skip <name>` / `pause`',
+    '',
+    `ICPs: *${KNOWN_SLUGS.join('*, *')}*  •  Say "guide" for a walkthrough`,
+  ].join('\n');
+}
+
+
+function buildGuideMessage(): string {
+  return [
+    '*Getting Started with Rielly*',
+    '',
+    "Rielly helps you understand who your best customers are, whether you're targeting the right people, and find new prospects that match. Here's how to use it:",
+    '',
+    '*Step 1: See what\'s working*',
+    '_"What do our fiona customers look like?"_',
+    "This pulls your actual customer data — who they are, what titles they hold, how active they are on the platform, where they're located. It compares this against your ICP definition and tells you what's missing.",
+    '',
+    '*Step 2: Close the gaps*',
+    '_"Are there gaps in fiona?" or "What are we missing?"_',
+    "If customers have titles or industries your ICP doesn't target, you'll see them here. When it suggests a fix, you can say it right back:",
+    '_"Add Senior Event Manager to fiona\'s target titles"_',
+    '',
+    '*Step 3: Find new prospects*',
+    '_"Find me 5 fiona prospects" or "Sample fiona"_',
+    'This searches FullEnrich for real people matching your ICP. Costs credits, so it asks for confirmation first.',
+    '',
+    '*Step 4: Check before you reach out*',
+    '_"Do we already know these people?"_',
+    "Cross-checks your sample against HubSpot — shows who's already in the system, their grade, and engagement. Say \"tell me more about #3\" to drill in.",
+    '',
+    '*Step 5: Review daily batches*',
+    '_"What\'s pending?"_',
+    "When the pipeline runs, it'll post prospect batches here for your approval. Say \"approve\" to send, \"skip Maria\" to remove one, or \"pause\" to defer.",
+    '',
+    '*Other things you can ask:*',
+    '• _"Who are our best leads?"_ — top planners by HubSpot grade',
+    '• _"Show me the fiona config"_ — current targeting',
+    '• _"How many fiona matches are there?"_ — match count + cost',
+    '',
+    `ICPs: *${KNOWN_SLUGS.join('*, *')}* (Fiona = agencies, Carrie = corporate, Nancy = associations)`,
   ].join('\n');
 }
 
@@ -736,6 +784,9 @@ export async function handleProspectBotMessage(
       }
       return result.text;
     }
+
+    case 'guide':
+      return buildGuideMessage();
 
     case 'help':
     default:
