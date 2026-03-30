@@ -253,7 +253,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       .trim();
     const triggerMessageId = latestMessage.thread_ts || latestMessage.id;
     try {
-      const response = await handleProspectBotMessage(messageText, chatJid, triggerMessageId);
+      const response = await handleProspectBotMessage(
+        messageText,
+        chatJid,
+        triggerMessageId,
+      );
       if (triggerMessageId && channel.sendThreadReply) {
         await channel.sendThreadReply(chatJid, response, triggerMessageId);
       } else {
@@ -1479,7 +1483,8 @@ async function startMessageLoop(): Promise<void> {
             const messageText = latestMessage.content
               .replace(loopTriggerPattern, '')
               .trim();
-            const triggerMessageId = latestMessage.thread_ts || latestMessage.id;
+            const triggerMessageId =
+              latestMessage.thread_ts || latestMessage.id;
             try {
               const response = await handleProspectBotMessage(
                 messageText,
@@ -1487,7 +1492,11 @@ async function startMessageLoop(): Promise<void> {
                 triggerMessageId,
               );
               if (triggerMessageId && channel.sendThreadReply) {
-                await channel.sendThreadReply(chatJid, response, triggerMessageId);
+                await channel.sendThreadReply(
+                  chatJid,
+                  response,
+                  triggerMessageId,
+                );
               } else {
                 await channel.sendMessage(chatJid, response);
               }
@@ -1495,7 +1504,11 @@ async function startMessageLoop(): Promise<void> {
               logger.error({ err, chatJid }, 'ProspectBot handler error');
               const errorText = 'SDR Bot API is unavailable, try again later.';
               if (triggerMessageId && channel.sendThreadReply) {
-                await channel.sendThreadReply(chatJid, errorText, triggerMessageId);
+                await channel.sendThreadReply(
+                  chatJid,
+                  errorText,
+                  triggerMessageId,
+                );
               } else {
                 await channel.sendMessage(chatJid, errorText);
               }

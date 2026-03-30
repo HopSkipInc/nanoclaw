@@ -237,6 +237,7 @@ type Intent =
   | { type: 'sample'; slug: IcpSlug; count: number }
   | { type: 'edit'; slug: IcpSlug; instruction: string }
   | { type: 'customer-profile'; slug: IcpSlug }
+  | { type: 'auto-refine'; slug: IcpSlug; apply: boolean }
   | { type: 'explain'; question: string }
   | { type: 'guide' }
   | { type: 'help' }
@@ -309,6 +310,9 @@ async function classifyProspectBotIntent(
         case 'crm-detail':
           if (classified.target)
             return { type: 'crm-detail', target: classified.target };
+          break;
+        case 'auto-refine':
+          if (resolvedSlug) return { type: 'auto-refine', slug: resolvedSlug, apply: false };
           break;
         case 'customer-profile':
           if (resolvedSlug)
@@ -410,6 +414,17 @@ function classifyByKeywords(text: string, fallbackSlug?: IcpSlug): Intent {
   )
     return { type: 'icp-gaps', slug: slug ?? null };
 
+  // Auto-refine intent
+  if (
+    /\b(refine|auto.?refine|suggest.*improv|tighten|improve targeting|what should.*(change|fix|update))\b/.test(
+      lower,
+    ) &&
+    slug
+  ) {
+    const shouldApply = /\bapply\b/.test(lower);
+    return { type: 'auto-refine', slug, apply: shouldApply };
+  }
+
   // ICP intents
   if (/\b(list|show\s+all|icps)\b/.test(lower)) return { type: 'list' };
   if (/\bestimate\b/.test(lower) && slug) return { type: 'estimate', slug };
@@ -441,12 +456,14 @@ interface HaikuClassification {
     | 'icp-gaps'
     | 'crm-detail'
     | 'customer-profile'
+    | 'auto-refine'
     | 'explain'
     | 'guide';
   slug?: IcpSlug;
   count?: number;
   instruction?: string;
   target?: string;
+  apply?: boolean;
 }
 
 async function classifyWithHaiku(
@@ -465,6 +482,7 @@ Classify as one of these intents:
 
 Understanding customers & targeting:
 - "customer-profile" — who are our actual customers, what do they look like, how do they compare to the ICP ("who are our best customers", "what does a typical fiona look like", "are we targeting the right people", "show me the customer profile for fiona", "what's working")
+- "auto-refine" — analyze data and suggest ICP improvements, close the flywheel ("refine fiona", "suggest improvements for carrie", "what should I change about fiona", "auto-refine nancy", "tighten fiona", "improve targeting")
 - "icp-gaps" — what's missing from our targeting, where are we leaving money on the table ("what are we missing", "how does our targeting compare", "any gaps in fiona", "are we missing any titles", "who are we not going after that we should be")
 - "top-planners" — who are the strongest leads in our pipeline ("who are our best leads", "top prospects", "who should I call first", "hot leads", "most promising planners")
 - "crm-check" — do we already know these prospects, are they in HubSpot ("do we know these people", "check hubspot", "are they already in our system", "crm lookup")
@@ -491,7 +509,7 @@ Onboarding:
 - "help" — quick command reference ("help", "commands")
 
 Respond with ONLY valid JSON, no markdown:
-{"intent": "<type>", "slug": "<icp-name-or-null>", "count": <number-or-null>, "instruction": "<edit-instruction-or-null>", "target": "<skip-target-name-or-number-or-null>"}`;
+{"intent": "<type>", "slug": "<icp-name-or-null>", "count": <number-or-null>, "instruction": "<edit-instruction-or-null>", "target": "<skip-target-name-or-number-or-null>", "apply": <true-or-false-or-null>}`;
 
   const body = JSON.stringify({
     model: 'claude-haiku-4-5-20251001',
@@ -600,6 +618,15 @@ Rielly is a revenue intelligence bot for sales teams. It helps AEs understand th
 - Changes are saved to the ICP YAML config file
 - Does not trigger any external API calls or data changes
 
+### Auto-refine (read-only by default)
+- "refine" analyzes HubSpot data from two angles: top-graded performers (A/B contacts) and actual paying customers
+- Compares both against the ICP YAML definition to find titles, headcount ranges, and industries that are missing
+- Returns ranked suggestions with confidence levels and evidence
+- Default mode is read-only — shows suggestions but doesn't change anything
+- "refine <icp> apply" applies all suggestions through the existing ICP edit flow
+- Each applied suggestion goes through Claude-powered YAML editing with validation
+- This is the intelligence flywheel: data → insight → suggestion → approval → better ICP
+
 ### Estimates (free)
 - Shows match count and credit cost without pulling results
 - No credits spent, no external calls beyond FullEnrich's count endpoint
@@ -688,6 +715,7 @@ function buildHelpMessage(): string {
     '_Find & refine_',
     '• `show <icp>` — Current targeting config',
     '• `edit <icp> <change>` — Adjust targeting ("add Senior Event Manager to titles")',
+    '• `refine <icp>` — Analyze data and suggest ICP improvements',
     '• `sample <icp> [count]` — Pull real prospects (costs credits)',
     '',
     '_Daily batches_',
@@ -712,6 +740,11 @@ function buildGuideMessage(): string {
     '_"Are there gaps in fiona?" or "What are we missing?"_',
     "If customers have titles or industries your ICP doesn't target, you'll see them here. When it suggests a fix, you can say it right back:",
     '_"Add Senior Event Manager to fiona\'s target titles"_',
+    '',
+    '',
+    '*Step 2b: Let Rielly suggest fixes*',
+    '_"Refine fiona" or "Suggest improvements for fiona"_',
+    "Rielly analyzes your top performers AND actual customers, then generates specific edit suggestions with confidence levels. Say \"refine fiona apply\" to accept all suggestions, or cherry-pick with the edit command.",
     '',
     '*Step 3: Find new prospects*',
     '_"Find me 5 fiona prospects" or "Sample fiona"_',
@@ -862,6 +895,14 @@ export async function handleProspectBotMessage(
       const slugParam = intent.slug ? `?slug=${intent.slug}` : '';
       const result = await callApi('GET', `/hubspot/icp-gaps${slugParam}`);
       return `${result.text}\n\n_Try: \`top planners\` · \`check hubspot <icp>\` · \`edit <instruction>\` · \`customer profile <icp>\`_`;
+    }
+
+    case 'auto-refine': {
+      const params = new URLSearchParams();
+      if (intent.apply) params.set('apply', 'true');
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      const result = await callApi('POST', `/icp/${intent.slug}/auto-refine${qs}`);
+      return result.text;
     }
 
     case 'customer-profile': {

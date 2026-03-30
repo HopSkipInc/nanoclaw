@@ -107,7 +107,9 @@ function extractBatchId(raw: Record<string, unknown>): string | null {
  */
 async function resolveBatchId(
   threadKey?: string,
-): Promise<{ batchId: string; error: null } | { batchId: null; error: string }> {
+): Promise<
+  { batchId: string; error: null } | { batchId: null; error: string }
+> {
   // Prefer thread-based lookup for exact batch resolution
   if (threadKey) {
     const result = await callBatchApi(
